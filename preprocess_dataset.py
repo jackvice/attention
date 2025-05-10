@@ -1,0 +1,490 @@
+# preprocess_dataset.py
+from typing import Dict, Tuple, List, Optional, Any, NamedTuple, Callable, Iterator
+import os
+import numpy as np
+import jax.numpy as jnp
+import jax
+from pathlib import Path
+import time
+import logging
+import onnxruntime as ort
+from functools import partial
+import cv2
+from config_temporal import FUTURE_OFFSET_F, PAST_OFFSETS_F, CAM_ID, SIGMA_PX
+
+
+# Import your existing utility functions
+from trajectory_utils import (
+    scan_dataset,
+    detect_pedestrians_yolo_onnx,
+    load_and_preprocess_frame,
+    create_masks_from_pedestrians,
+    create_target_heatmap_from_pedestrians,
+    TrajectorySequence,
+    compute_trajectories,
+    Frame
+)
+
+# In preprocess_dataset.py, find the function that creates frame sequences
+# Update it to use the defined temporal offsets
+
+def create_frame_sequences(
+    frames: List[Frame],
+    sequence_length: int = 5,
+    stride: int = 1,
+) -> List[Tuple[List[Frame], Frame]]:
+    """
+    Build (past‑sequence, future‑frame) pairs where all frames
+    belong to the *same* (sequence_id, camera_id) clip and cover
+    the offsets in PAST_OFFSETS_F plus FUTURE_OFFSET_F.
+    """
+    # Ensure time order
+    frames = sorted(frames, key=lambda f: f.frame_id)
+
+    # Quick reject if the clip is too short
+    min_history = abs(min(PAST_OFFSETS_F))
+    if len(frames) < min_history + FUTURE_OFFSET_F + 1:
+        return []
+
+    sequences = []
+    max_start = len(frames) - FUTURE_OFFSET_F - 1
+
+    for base_idx in range(min_history, max_start, stride):
+        base = frames[base_idx]
+
+        # ---- safety: refuse to cross a clip boundary ----
+        if any(fr.sequence_id != base.sequence_id
+               for fr in frames[base_idx - min_history : base_idx + 1]):
+            continue
+        # -------------------------------------------------
+
+        past = []
+        for off in PAST_OFFSETS_F:
+            past.append(frames[base_idx + off])
+
+        future = frames[base_idx + FUTURE_OFFSET_F]
+
+        sequences.append((past, future))
+
+    return sequences
+
+def preprocess_dataset(
+    dataset_path: str,
+    output_path: str,
+    sequence_length: int = 5,
+    target_width: int = 320,
+    target_height: int = 320,
+    yolo_model_path: str = "yolo11n.onnx",
+    stride: int = 1,
+    max_per_sequence: Optional[int] = None,
+    debug_image_dir: Optional[str] = '/home/jack/src/attention/yolo/model_output/debug_images'  # Add this parameter
+) -> str:
+    # Rest of the function
+    """
+    Preprocess a dataset once and save tensors to disk for fast loading.
+    
+    Args:
+        dataset_path: Path to original dataset
+        output_path: Path to save preprocessed data
+        sequence_length: Length of frame sequences
+        target_width: Target frame width
+        target_height: Target frame height
+        yolo_model_path: Path to YOLO model
+        stride: Stride for frame sequences
+        max_per_sequence: Maximum frames per sequence (optional)
+        
+    Returns:
+        Path to the saved dataset file
+    """
+    logging.info(f"Preprocessing dataset at {dataset_path}")
+    start_time = time.time()
+    
+    # Create output directory if it doesn't exist
+    os.makedirs(output_path, exist_ok=True)
+    
+    # Generate a filename based on parameters
+    params = f"seq{sequence_length}_stride{stride}_w{target_width}_h{target_height}"
+    if max_per_sequence:
+        params += f"_max{max_per_sequence}"
+    output_file = os.path.join(output_path, f"{Path(dataset_path).name}_{params}.npz")
+    
+    # Check if preprocessed file already exists
+    if os.path.exists(output_file):
+        logging.info(f"Preprocessed dataset already exists at {output_file}")
+        return output_file
+    
+    # Scan dataset
+    cameras = scan_dataset(dataset_path, max_per_sequence=max_per_sequence)
+    
+    # Create frame sequences
+    all_frame_sequences = []
+    for camera_id, frames in cameras.items():
+        logging.info(f"Processing camera {camera_id} with {len(frames)} frames")
+        if len(frames) >= sequence_length:
+            frame_sequences = create_frame_sequences(
+                frames, 
+                sequence_length=sequence_length, 
+                stride=stride
+            )
+            all_frame_sequences.extend(frame_sequences)
+            logging.info(f"Created {len(frame_sequences)} sequences from camera {camera_id}")
+    
+    logging.info(f"Created {len(all_frame_sequences)} total frame sequences")
+    
+    # Set up a YOLO session to be reused
+    import onnxruntime as ort
+    yolo_session = ort.InferenceSession(
+        yolo_model_path,
+        providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
+    )
+    
+    # Process sequences with explicit detection function
+    # detection function that maintains the signature expected by compute_trajectories
+    # but reuses the YOLO session
+    def detect_yolo_with_session(image):
+        pedestrians, _ = detect_pedestrians_yolo_onnx(
+            image,
+            onnx_path=yolo_model_path,
+            session=yolo_session
+        )
+        return pedestrians
+    
+    # Set __name__ attribute to match what compute_trajectories expects
+    detect_yolo_with_session.__name__ = 'detect_pedestrians_yolo_onnx'
+    
+    # Now call compute_trajectories with our modified function
+    trajectory_sequences = compute_trajectories(
+        frame_sequences=all_frame_sequences,
+        detect_fn=detect_yolo_with_session,
+        target_width=target_width,
+        target_height=target_height,
+        yolo_model_path=yolo_model_path
+    )
+    
+    logging.info(f"Computed {len(trajectory_sequences)} trajectory sequences")
+    
+    # Count valid sequences (with trajectories)
+    valid_sequences = [seq for seq in trajectory_sequences if seq.trajectories]
+    logging.info(f"Found {len(valid_sequences)} valid sequences with trajectories")
+    
+    if not valid_sequences:
+        logging.error("No valid sequences found, cannot create dataset")
+        return ""
+
+    # In the part where you create arrays and fill them
+    # Modify the target_data assignment to use future pedestrians
+
+    # Preallocate arrays
+    num_sequences = len(valid_sequences)
+    rgb_data = np.zeros((num_sequences, sequence_length,
+                         target_height, target_width, 3), dtype=np.float32)
+    mask_data = np.zeros((num_sequences, sequence_length,
+                          target_height, target_width, 1), dtype=np.float32)
+    target_data = np.zeros((num_sequences, target_height,
+                            target_width, 1), dtype=np.float32)
+
+    # Fill arrays
+    for i, traj_seq in enumerate(valid_sequences):
+        # Process RGB frames
+        for j, frame in enumerate(traj_seq.frames):
+            rgb_data[i, j] = load_and_preprocess_frame(
+                frame.path,
+                target_width=target_width,
+                target_height=target_height
+            )
+    
+        # Process mask frames
+        for j, pedestrians in enumerate(traj_seq.pedestrians):
+            mask_data[i, j] = create_masks_from_pedestrians(
+                pedestrians, 
+                height=target_height, 
+                width=target_width
+            )
+    
+        # Create target heatmap using future pedestrians
+        target_data[i] = create_target_heatmap_from_pedestrians(
+            traj_seq.future_pedestrians,
+            target_height=target_height,
+            target_width=target_width,
+            sigma=SIGMA_PX
+        )
+
+
+
+    # In preprocess_dataset.py, after creating the target heatmap
+    if debug_image_dir and i % 20 == 0:  # Save every 20th example
+        os.makedirs(debug_image_dir, exist_ok=True)
+    
+        # Visualize input frames (from earliest to latest)
+        for j, frame in enumerate(traj_seq.frames):
+            rgb_img = load_and_preprocess_frame(frame.path, target_width, target_height)
+            rgb_img = (rgb_img * 255).astype(np.uint8)
+            bgr_img = cv2.cvtColor(rgb_img, cv2.COLOR_RGB2BGR)
+        
+            # Add timestamp text
+            time_offset = PAST_OFFSETS_F[j] / 10.0  # Convert to seconds assuming 10 FPS
+            cv2.putText(
+                bgr_img, 
+                f"t={time_offset:.1f}s", 
+                (20, 30), 
+                cv2.FONT_HERSHEY_SIMPLEX, 
+                1, 
+                (255, 255, 255), 
+                2
+            )
+        
+            output_path = os.path.join(debug_image_dir,
+                                       f"sample_{i}_input_t{time_offset:.1f}s.png")
+            cv2.imwrite(output_path, bgr_img)
+    
+        # Load and save future frame with YOLO detections
+        future_img = load_and_preprocess_frame(
+            traj_seq.future_frame.path,
+            target_width=target_width,
+            target_height=target_height
+        )
+        future_img_viz = (future_img * 255).astype(np.uint8)
+    
+        # Draw pedestrian detections on future frame
+        future_with_detections = future_img_viz.copy()
+        for ped in traj_seq.future_pedestrians:
+            # Draw bounding box
+            x1, y1, x2, y2 = ped.bbox.astype(int)
+            cv2.rectangle(future_with_detections, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        
+            # Add confidence text
+            cv2.putText(
+                future_with_detections,
+                f"{ped.confidence:.2f}",
+                (x1, y1 - 5),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (0, 255, 0),
+                2
+            )
+        
+            # Draw center position
+            cx, cy = ped.position.astype(int)
+            cv2.circle(future_with_detections, (cx, cy), 4, (255, 0, 0), -1)
+    
+        # Add timestamp text
+        cv2.putText(
+            future_with_detections, 
+            f"t=+{FUTURE_OFFSET_F/10.0:.1f}s (truth)", 
+            (20, 30), 
+            cv2.FONT_HERSHEY_SIMPLEX, 
+            1, 
+            (255, 255, 255), 
+            2
+        )
+    
+        # Save future frame with detections
+        future_with_detections_bgr = cv2.cvtColor(future_with_detections,
+                                                  cv2.COLOR_RGB2BGR)
+        cv2.imwrite(os.path.join(debug_image_dir,
+                                 f"sample_{i}_future_with_detections.png"),
+                    future_with_detections_bgr)
+    
+        # Save the heatmap separately
+        heat = target_data[i, ..., 0]
+        heat_colored = cv2.applyColorMap((heat * 255).astype(np.uint8),
+                                         cv2.COLORMAP_JET)
+        cv2.imwrite(os.path.join(debug_image_dir, f"sample_{i}_heatmap.png"),
+                    heat_colored)
+
+    return output_file
+
+def create_memmap_batch_provider(
+    data_path: str,
+    batch_size: int = 8,
+    shuffle: bool = True,
+    rng_seed: int = 42
+) -> Callable[[], Iterator[Tuple[np.ndarray, np.ndarray, np.ndarray]]]:
+    """
+    Create a batch provider that efficiently loads data from memory-mapped arrays.
+    
+    Args:
+        data_path: Path to preprocessed dataset
+        batch_size: Batch size
+        shuffle: Whether to shuffle sequences
+        rng_seed: Random seed for shuffling
+        
+    Returns:
+        Callable that yields batches of (rgb, mask, target)
+    """
+    # Load dataset info without loading the data
+    dataset = np.load(data_path, mmap_mode='r')
+    
+    rgb_data = dataset['rgb']
+    mask_data = dataset['mask']
+    target_data = dataset['target']
+    
+    num_sequences = rgb_data.shape[0]
+    
+    def batch_generator() -> Iterator[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+        # Create shuffled indices
+        indices = np.arange(num_sequences)
+        
+        if shuffle:
+            rng = np.random.RandomState(rng_seed)
+            rng.shuffle(indices)
+        
+        # Yield batches
+        for start_idx in range(0, num_sequences, batch_size):
+            end_idx = min(start_idx + batch_size, num_sequences)
+            batch_indices = indices[start_idx:end_idx]
+            
+            # Extract data for this batch
+            rgb_batch = rgb_data[batch_indices]
+            mask_batch = mask_data[batch_indices]
+            target_batch = target_data[batch_indices]
+            
+            # Pad to batch_size if needed
+            if len(batch_indices) < batch_size:
+                pad_size = batch_size - len(batch_indices)
+                
+                # Pad with zeros or duplicate the last example
+                rgb_pad = np.zeros((pad_size,) + rgb_data.shape[1:], dtype=rgb_data.dtype)
+                mask_pad = np.zeros((pad_size,) + mask_data.shape[1:], dtype=mask_data.dtype)
+                target_pad = np.zeros((pad_size,) + target_data.shape[1:], dtype=target_data.dtype)
+                
+                rgb_batch = np.concatenate([rgb_batch, rgb_pad], axis=0)
+                mask_batch = np.concatenate([mask_batch, mask_pad], axis=0)
+                target_batch = np.concatenate([target_batch, target_pad], axis=0)
+            
+            yield rgb_batch, mask_batch, target_batch
+    
+    return batch_generator
+
+
+def train_trajectory_model_efficient(
+    preprocessed_train_path: str,
+    preprocessed_val_path: str,
+    output_dir: str = "./model_output",
+    num_epochs: int = 3,
+    steps_per_epoch: Optional[int] = None,
+    batch_size: int = 8,
+    learning_rate: float = 1e-4,
+    embedding_dim: int = 256,
+    num_heads: int = 8,
+    debug_image_dir: Optional[str] = "./out_images"
+) -> Dict[str, Any]:
+    """
+    Train the model efficiently using preprocessed datasets.
+    
+    Args:
+        preprocessed_train_path: Path to preprocessed training data
+        preprocessed_val_path: Path to preprocessed validation data
+        output_dir: Directory to save model and outputs
+        num_epochs: Number of training epochs
+        steps_per_epoch: Number of steps per epoch (None = full dataset)
+        batch_size: Batch size
+        learning_rate: Learning rate
+        embedding_dim: Embedding dimension
+        num_heads: Number of attention heads
+        debug_image_dir: Directory to save debug images
+        
+    Returns:
+        Dictionary with trained state and training history
+    """
+    from trajectory_model import (
+        train_model,
+        ModelConfig,
+        create_train_state,
+        predict,
+        SpatiotemporalAttention
+    )
+    
+    logging.info(f"Starting efficient training with {num_epochs} epochs")
+    
+    # Create output directory
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Create batch providers
+    train_dataset_info = np.load(preprocessed_train_path, mmap_mode='r')
+    val_dataset_info = np.load(preprocessed_val_path, mmap_mode='r')
+    
+    # Get shape information from the datasets
+    rgb_shape = train_dataset_info['rgb'].shape
+    sequence_length = rgb_shape[1]
+    target_height = rgb_shape[2]
+    target_width = rgb_shape[3]
+    
+    # Determine steps_per_epoch if not provided
+    if steps_per_epoch is None:
+        steps_per_epoch = (rgb_shape[0] + batch_size - 1) // batch_size
+    
+    # Create batch providers
+    train_provider = create_memmap_batch_provider(
+        preprocessed_train_path,
+        batch_size=batch_size,
+        shuffle=True,
+        rng_seed=42
+    )
+    
+    val_provider = create_memmap_batch_provider(
+        preprocessed_val_path,
+        batch_size=batch_size,
+        shuffle=False,
+        rng_seed=42
+    )
+    
+    # Configure model
+    config = ModelConfig(
+        embedding_dim=embedding_dim,
+        num_heads=num_heads,
+        dropout_rate=0.1,
+        feature_dim=64,
+        max_len=5000,
+        sequence_length=sequence_length,
+        output_height=target_height,
+        output_width=target_width
+    )
+    
+    # Add prefetching to the batch providers (optional)
+    def prefetch_provider(provider, prefetch_size=2):
+        def prefetched_provider():
+            for batch in provider():
+                # Convert to JAX arrays and prefetch to device
+                rgb, mask, target = batch
+                rgb_jax = jax.device_put(jnp.array(rgb))
+                mask_jax = jax.device_put(jnp.array(mask))
+                target_jax = jax.device_put(jnp.array(target))
+                yield rgb_jax, mask_jax, target_jax
+        return prefetched_provider
+    
+    # Use prefetching if available
+    try:
+        train_dataset_fn = prefetch_provider(train_provider)
+        val_dataset_fn = prefetch_provider(val_provider)
+    except:
+        # Fall back to regular providers if prefetching fails
+        train_dataset_fn = train_provider
+        val_dataset_fn = val_provider
+    
+    # Train model
+    result = train_model(
+        train_dataset_fn=train_dataset_fn,
+        val_dataset_fn=val_dataset_fn,
+        config=config,
+        num_epochs=num_epochs,
+        steps_per_epoch=steps_per_epoch,
+        eval_steps=20,
+        learning_rate=learning_rate,
+        log_every=10,
+        save_checkpoint_dir=output_dir,
+        debug_image_dir=debug_image_dir
+    )
+    
+    # Save final model
+    import pickle
+    final_model_path = os.path.join(output_dir, "final_model.pkl")
+    with open(final_model_path, 'wb') as f:
+        pickle.dump({
+            'params': result['state'].params,
+            'config': config._asdict()
+        }, f)
+    
+    logging.info(f"Final model saved to {final_model_path}")
+    
+    return result

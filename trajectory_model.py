@@ -620,11 +620,13 @@ def train_model(
                         training=False
                     )
                     # Calculate variance along x and y axes
+                    """
                     pred = np.array(predictions[0, ..., 0])  # [H,W]
                     print(f"Epoch {epoch+1}, Step {step}")
                     print("σ_x:", pred.var(axis=1).mean(), "σ_y:", pred.var(axis=0).mean())
                     tgt = np.array(target_jax[0, ..., 0])
                     print("tgt σ_x:", tgt.var(axis=1).mean(), "tgt σ_y:", tgt.var(axis=0).mean())
+                    """
                 # Record metrics
                 train_losses.append(float(metrics.loss))
                 train_rmses.append(float(metrics.rmse))

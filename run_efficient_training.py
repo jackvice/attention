@@ -53,13 +53,14 @@ def main():
     logger = logging.getLogger("efficient_trajectory")
     
     # Import necessary modules
-    from preprocess_dataset import preprocess_dataset, train_trajectory_model_efficient
+    from preprocess_dataset import preprocess_dataset_memmap, train_trajectory_model_efficient
     
     # Create preprocessed data directory
     os.makedirs(args.preprocessed_dir, exist_ok=True)
     
     # Preprocess training data (stride=1)
-    train_data_path = preprocess_dataset(
+    #train_data_path = preprocess_dataset(
+    train_data_path = preprocess_dataset_memmap(
         dataset_path=args.dataset_path,
         output_path=args.preprocessed_dir,
         sequence_length=args.sequence_length,
@@ -71,7 +72,8 @@ def main():
     )
     
     # Preprocess validation data (stride=2)
-    val_data_path = preprocess_dataset(
+    #val_data_path = preprocess_dataset(
+    val_data_path = preprocess_dataset_memmap(
         dataset_path=args.dataset_path,
         output_path=args.preprocessed_dir,
         sequence_length=args.sequence_length,

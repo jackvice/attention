@@ -209,6 +209,15 @@ def preprocess_dataset(
             sigma=SIGMA_PX
         )
 
+    # ---- write arrays to disk ----------------------------------------------
+    np.savez_compressed(
+        output_file,
+        rgb=rgb_data.astype(np.float16),      # optional: cast to save space
+        mask=mask_data.astype(np.float16),
+        target=target_data.astype(np.float16)
+    )
+    logging.info(f"Saved preprocessed dataset to {output_file}")
+    # -------------------------------------------------------------------------
 
 
     # In preprocess_dataset.py, after creating the target heatmap

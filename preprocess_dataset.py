@@ -964,7 +964,8 @@ def train_trajectory_model_efficient(
     learning_rate: float = 1e-4,
     embedding_dim: int = 256,
     num_heads: int = 8,
-    debug_image_dir: Optional[str] = "./out_images"
+    debug_image_dir: Optional[str] = "./out_images",
+    resume_checkpoint: Optional[str] = None,  # Add this parameter
 ) -> Dict[str, Any]:
     """
     Train the model efficiently using preprocessed datasets.

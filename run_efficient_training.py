@@ -42,7 +42,9 @@ def main():
                         help="Embedding dimension")
     parser.add_argument("--num_heads", type=int, default=4,
                         help="Number of attention heads")
-    
+    parser.add_argument("--resume_checkpoint", type=str, default=None,
+                    help="Path to checkpoint file to resume training from")
+
     args = parser.parse_args()
     
     # Configure logging
@@ -106,7 +108,8 @@ def main():
         learning_rate=args.learning_rate,
         embedding_dim=args.embedding_dim,
         num_heads=args.num_heads,
-        debug_image_dir=os.path.join(args.output_dir, "debug_images")
+        debug_image_dir=os.path.join(args.output_dir, "debug_images"),
+        resume_checkpoint=args.resume_checkpoint
     )
     
     logger.info("Training completed successfully")

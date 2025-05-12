@@ -810,8 +810,8 @@ def write_debug_images(
     prediction_heatmap_np = np.asarray(prediction_heatmap)
     
     # Create a subdirectory for this epoch to keep things organized
-    #epoch_dir = os.path.join(output_dir, f"epoch_{epoch}")
-    epoch_dir = os.path.join(output_dir, f"epoch_test")
+    epoch_dir = os.path.join(output_dir, f"epoch_{epoch}")
+    #epoch_dir = os.path.join(output_dir, f"epoch_test")
     os.makedirs(epoch_dir, exist_ok=True)
     
     # Write input RGB frames with timestamps

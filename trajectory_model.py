@@ -129,156 +129,6 @@ class SpatiotemporalAttention(nn.Module):
         
         return nn.sigmoid(x)  # Return the final heatmap
 
-class SpatiotemporalAttention_old(nn.Module):
-    config: ModelConfig
-
-    @nn.compact
-    def __call__(self, rgb_frames, mask_frames, *, training=False):
-        B, T, H, W, _ = rgb_frames.shape
-
-        rgb_encoder = FrameEncoder(name="rgb_enc")
-        mask_encoder = FrameEncoder(out_channels=(16, 32, 32), name="mask_enc")
-
-        # Define functions with fixed training parameter
-        def encode_rgb(frame):
-            return rgb_encoder(frame, training=training)
-        
-        def encode_mask(frame):
-            return mask_encoder(frame, training=training)
-
-        # Apply encoders to each frame
-        rgb_feats = jax.vmap(encode_rgb, in_axes=1, out_axes=1)(rgb_frames)  # [B, T, H', W', C1]
-        mask_feats = jax.vmap(encode_mask, in_axes=1, out_axes=1)(mask_frames)  # [B, T, H', W', C2]
-        
-        # Concatenate features along the channel dimension
-        feats = jnp.concatenate([rgb_feats, mask_feats], axis=-1)  # [B, T, H', W', C]
-        
-        # Get dimensions after convolutions
-        B, T, H_enc, W_enc, C = feats.shape
-        
-        # Reshape to tokens: flatten spatial dimensions to tokens
-        feats = feats.reshape(B, T * H_enc * W_enc, C)  # [B, T*H'*W', C]
-        
-        # Project to embedding dimension
-        feats = nn.Dense(self.config.embedding_dim)(feats)
-        feats = nn.LayerNorm()(feats)
-        
-        # Add positional encoding - modified for token approach
-        pos = self.param("pos_embedding",
-                       nn.initializers.normal(0.02),
-                       (1, T * H_enc * W_enc, self.config.embedding_dim))
-        feats = feats + pos
-        
-        # Self-attention over the tokens
-        attn_output = nn.SelfAttention(
-            num_heads=self.config.num_heads,
-            qkv_features=self.config.embedding_dim,
-            dropout_rate=self.config.dropout_rate
-        )(feats, deterministic=not training)
-        
-        feats = nn.LayerNorm()(feats + attn_output)
-        
-        # Project features before decoding
-        feats = nn.Dense(self.config.embedding_dim)(feats)
-        feats = nn.relu(feats)
-        feats = nn.Dropout(self.config.dropout_rate)(feats, deterministic=not training)
-        
-        # Reshape back to spatial representation
-        feats = feats.reshape(B, T, H_enc, W_enc, self.config.embedding_dim)
-        
-        # Pool over time dimension (alternative to mean pooling)
-        # Use attention pooling or just take the last time step
-        # Simple version: just use the last frame
-        #feats = feats[:, -1]  # [B, H', W', C]
-
-        x = nn.ConvTranspose(
-            features=self.config.embedding_dim // 2,
-            kernel_size=(4, 4),
-            strides=(2, 2),
-            padding="SAME"
-        )(feats)
-        x = nn.LayerNorm()(x)
-        x = nn.relu(x)
-        
-        x = nn.ConvTranspose(
-            features=self.config.embedding_dim // 4,
-            kernel_size=(4, 4),
-            strides=(2, 2),
-            padding="SAME"
-        )(x)
-        x = nn.LayerNorm()(x)
-        x = nn.relu(x)
-        
-        # Final convolution to get single-channel heatmap
-        x = nn.Conv(
-            features=1,
-            kernel_size=(3, 3),
-            strides=(1, 1),
-            padding="SAME"
-        )(x)
-        
-        # Ensure output is the correct size
-        if x.shape[1:3] != (self.config.output_height, self.config.output_width):
-            # Resize if needed - this is a fallback solution
-            x = jax.image.resize(
-                x, 
-                shape=(B, self.config.output_height, self.config.output_width, 1),
-                method="bilinear"
-            )
-        
-        return nn.sigmoid(x)  # Output shape: [B, H, W, 1]
-
-
-
-class SpatiotemporalAttention_old(nn.Module):
-    config: ModelConfig
-
-    @nn.compact
-    def __call__(self, rgb_frames, mask_frames, *, training=False):
-        B, T, H, W, _ = rgb_frames.shape
-
-        rgb_encoder = FrameEncoder(name="rgb_enc")
-        mask_encoder = FrameEncoder(out_channels=(16, 32, 32), name="mask_enc")
-
-        # Define functions with fixed training parameter
-        def encode_rgb(frame):
-            return rgb_encoder(frame, training=training)
-        
-        def encode_mask(frame):
-            return mask_encoder(frame, training=training)
-
-        # vmap over time axis → shape (B, T, C)
-        rgb_feats = jax.vmap(encode_rgb, in_axes=1, out_axes=1)(rgb_frames)
-        mask_feats = jax.vmap(encode_mask, in_axes=1, out_axes=1)(mask_frames)
-
-        # concat & project
-        feats = jnp.concatenate([rgb_feats, mask_feats], axis=-1)
-        feats = nn.Dense(self.config.embedding_dim)(feats)
-        feats = nn.LayerNorm()(feats)
-
-        # + positional encoding
-        pos = self.param("pos_embedding",
-                         nn.initializers.normal(0.02),
-                         (1, T, self.config.embedding_dim))
-        feats = feats + pos
-
-        # self-attention + residual
-        attn = nn.SelfAttention(num_heads=self.config.num_heads,
-                                qkv_features=self.config.embedding_dim,
-                                dropout_rate=self.config.dropout_rate)(
-                   feats, deterministic=not training)
-        feats = nn.LayerNorm()(feats + attn)
-
-        pooled = jnp.mean(feats, axis=1)
-        x = nn.Dense(self.config.embedding_dim)(pooled)
-        x = nn.relu(x)
-        x = nn.Dropout(self.config.dropout_rate)(x, deterministic=not training)
-        x = nn.Dense(self.config.embedding_dim // 2)(x)
-        x = nn.relu(x)
-        # New heatmap output layers
-        x = nn.Dense(self.config.output_height * self.config.output_width)(x)  # Flattened spatial output
-        x = jnp.reshape(x, (-1, self.config.output_height, self.config.output_width, 1))  # Reshape to spatial dimensions
-        return nn.sigmoid(x)  # (B, H, W, 1) heatmap with values in 0…1
 
 
 class Metrics(NamedTuple):
@@ -408,66 +258,6 @@ def train_step(
     return state, metrics, new_rng
 
 
-# 3. Modify the train_step function to handle spatial heatmaps
-@jax.jit
-def train_step_old(
-    state: train_state.TrainState,
-    rgb_batch: jnp.ndarray,
-    mask_batch: jnp.ndarray,
-    target_batch: jnp.ndarray,  # Now [B, H, W, 1]
-    rng: jnp.ndarray
-) -> Tuple[train_state.TrainState, Metrics, jnp.ndarray]:
-    """
-    Perform a single training step with spatial heatmap prediction.
-    """
-    # Split random key for dropout
-    new_rng, dropout_rng = random.split(rng)
-    
-    # Define loss function
-    def loss_fn(params):
-        predictions = state.apply_fn(
-            {'params': params},
-            rgb_batch, mask_batch,
-            training=True,
-            rngs={'dropout': dropout_rng}
-        )
-        
-        # MSE loss for spatial heatmap
-        mse_loss = jnp.mean((predictions - target_batch) ** 2)
-        
-        
-        # Optional: KL Divergence for probability distribution comparison
-        # Add small epsilon to avoid log(0)
-        epsilon = 1e-7
-        p_true = target_batch + epsilon
-        p_pred = predictions + epsilon
-        
-        # Normalize to ensure they're probability distributions
-        p_true = p_true / jnp.sum(p_true, axis=(1, 2, 3), keepdims=True)
-        p_pred = p_pred / jnp.sum(p_pred, axis=(1, 2, 3), keepdims=True)
-        
-        kl_loss = jnp.mean(jnp.sum(p_true * jnp.log(p_true / p_pred), axis=(1, 2, 3)))
-        
-        # Combined loss
-        loss = mse_loss + 0.1 * kl_loss  # Weight KL loss to balance with MSE #jmv
-        #loss = weighted_bce(p_pred, target_batch, pos_w=10.0) #jmv
-        return loss, predictions
-    
-    # Compute gradients
-    (loss, predictions), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
-    
-    # Update parameters
-    state = state.apply_gradients(grads=grads)
-    
-    # Compute metrics
-    # For heatmaps, we might use different metrics
-    # Here we're keeping RMSE but it's computed differently
-    rmse = jnp.sqrt(jnp.mean((predictions - target_batch) ** 2))
-    metrics = Metrics(loss=loss, rmse=rmse)
-    
-    return state, metrics, new_rng
-
-
 @jax.jit
 def eval_step(
     state: train_state.TrainState,
@@ -511,7 +301,8 @@ def train_model(
     learning_rate: float = 1e-4,
     log_every: int = 10,
     save_checkpoint_dir: Optional[str] = None,
-    debug_image_dir: Optional[str] = "./out_images"  # Add this parameter
+    debug_image_dir: Optional[str] = "./out_images",  # Add this parameter
+    resume_checkpoint: Optional[str] = None  # Add this parameter
 ) -> Dict[str, Any]:
     """
     Train the model using provided dataset functions.
@@ -535,9 +326,41 @@ def train_model(
     rng = random.PRNGKey(42)
     rng, init_rng = random.split(rng)
     
-    # Create training state
+    # Create training state (with or without checkpoint)
     logger.info("Initializing model parameters...")
-    state = create_train_state(config, init_rng, learning_rate)
+    start_epoch = 0
+    
+    if resume_checkpoint and os.path.exists(resume_checkpoint):
+        # Load checkpoint
+        logger.info(f"Loading checkpoint from {resume_checkpoint}")
+        with open(resume_checkpoint, 'rb') as f:
+            checkpoint = pickle.load(f)
+        
+        # Get start epoch
+        start_epoch = checkpoint.get('epoch', 0)
+        
+        # Create optimizer with same configuration
+        tx = optax.chain(
+            optax.clip_by_global_norm(1.0),
+            optax.adam(learning_rate=learning_rate)
+        )
+        
+        # Create model with same architecture
+        model = SpatiotemporalAttention(config=config)
+        
+        # Create state with existing params and optimizer
+        state = train_state.TrainState(
+            step=0,  # Will be incremented during training
+            apply_fn=model.apply,
+            params=checkpoint['params'],
+            tx=tx,
+            opt_state=checkpoint.get('optimizer_state', None)
+        )
+        
+        logger.info(f"Resuming from epoch {start_epoch}")
+    else:
+        # Create new state
+        state = create_train_state(config, init_rng, learning_rate)
     
     # Initialize history
     history = {
@@ -547,9 +370,9 @@ def train_model(
         'val_rmse': []
     }
     
-    # Training loop
+    # Training loop - start from the checkpoint epoch
     logger.info(f"Starting training for {num_epochs} epochs...")
-    for epoch in range(num_epochs):
+    for epoch in range(start_epoch, num_epochs):
         start_time = time.time()
         train_losses = []
         train_rmses = []
@@ -579,7 +402,7 @@ def train_model(
             # the target heatmap for visualization or reload from the original dataset
     
             # Option 1: Only use what we already have
-            if debug_image_dir:
+            if debug_image_dir and ((epoch +1) % 10) == 0:
                 # In train_model function, modify the debug visualization call:
                 write_debug_images(
                     rgb_frames, 
@@ -722,7 +545,8 @@ def train_model(
             logger.info(f"Validation Loss: {val_loss:.4f}, Validation RMSE: {val_rmse:.4f}")
         
         # Save checkpoint
-        if save_checkpoint_dir is not None:
+        if (
+                save_checkpoint_dir is not None) and (epoch % 10 == 0):
             import os
             import pickle
             os.makedirs(save_checkpoint_dir, exist_ok=True)

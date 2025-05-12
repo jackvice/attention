@@ -136,6 +136,7 @@ class Metrics(NamedTuple):
     loss: float
     rmse: float
 
+
 def create_train_state(
     config: ModelConfig,
     rng_key: jnp.ndarray,
@@ -203,6 +204,61 @@ def weighted_bce(pred, target, pos_w: float = 10.0, eps: float = 1e-6):
 
 @jax.jit
 def train_step(
+    state: train_state.TrainState,
+    rgb_batch: jnp.ndarray,
+    mask_batch: jnp.ndarray,
+    target_batch: jnp.ndarray,
+    rng: jnp.ndarray
+) -> Tuple[train_state.TrainState, Metrics, jnp.ndarray]:
+    """Perform a single training step with spatial heatmap prediction."""
+    # Split random key for dropout
+    new_rng, dropout_rng = random.split(rng)
+    
+    # Define loss function
+    def loss_fn(params):
+        predictions = state.apply_fn(
+            {'params': params},
+            rgb_batch, mask_batch,
+            training=True,
+            rngs={'dropout': dropout_rng}
+        )
+        
+        # --- numerically stable BCE with class weighting ---
+        epsilon = 1e-7
+        pos_weight = 10.0
+        
+        pos_mask = (target_batch > 0)
+        neg_mask = ~pos_mask
+        
+        # clip predictions to avoid log(0) and log(1)
+        pred = jnp.clip(predictions, epsilon, 1.0 - epsilon)
+        
+        # sums instead of mean, then normalize by count (≥1)
+        pos_loss = -pos_weight * jnp.sum(pos_mask * jnp.log(pred)) / jnp.maximum(pos_mask.sum(), 1)
+        neg_loss = -jnp.sum(neg_mask * jnp.log1p(-pred)) / jnp.maximum(neg_mask.sum(), 1)
+        
+        loss = pos_loss + neg_loss
+        
+        # Optional debugging to detect NaNs early
+        # Uncomment this to stop immediately when NaNs appear
+        # jax.debug.callback(lambda l: jnp.any(jnp.isnan(l)), loss)
+        
+        return loss, predictions
+    
+    # Compute loss and gradients
+    (loss, predictions), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
+    
+    # Apply gradients
+    state = state.apply_gradients(grads=grads)
+    
+    # Calculate RMSE metric (this doesn't affect training)
+    rmse = jnp.sqrt(jnp.mean((predictions - target_batch) ** 2))
+    metrics = Metrics(loss=loss, rmse=rmse)
+    
+    return state, metrics, new_rng
+
+@jax.jit
+def train_step_old(
     state: train_state.TrainState,
     rgb_batch: jnp.ndarray,
     mask_batch: jnp.ndarray,
@@ -302,6 +358,7 @@ def train_model(
     log_every: int = 10,
     save_checkpoint_dir: Optional[str] = None,
     debug_image_dir: Optional[str] = "./out_images",  # Add this parameter
+    tensorboard_dir: Optional[str] = "./log_dir",
     resume_checkpoint: Optional[str] = None  # Add this parameter
 ) -> Dict[str, Any]:
     """
@@ -325,6 +382,23 @@ def train_model(
     # Initialize random key
     rng = random.PRNGKey(42)
     rng, init_rng = random.split(rng)
+
+    #Initialize TensorBoard if directory is provided
+    summary_writer = None
+    if tensorboard_dir:
+        try:
+            from torch.utils.tensorboard import SummaryWriter
+            import os
+            
+            # Create directory if needed
+            os.makedirs(tensorboard_dir, exist_ok=True)
+            
+            # Create SummaryWriter
+            summary_writer = SummaryWriter(log_dir=tensorboard_dir)
+            logger.info(f"TensorBoard logging enabled at {tensorboard_dir}")
+        except ImportError:
+            logger.warning("Could not import SummaryWriter, TensorBoard logging disabled")
+
     
     # Create training state (with or without checkpoint)
     logger.info("Initializing model parameters...")
@@ -452,15 +526,7 @@ def train_model(
                     """
                 # Record metrics
                 train_losses.append(float(metrics.loss))
-                train_rmses.append(float(metrics.rmse))
-                
-                # Log progress
-                if False:#(step + 1) % log_every == 0:
-                    logger.info(
-                        f"Epoch {epoch+1}/{num_epochs}, Step {step+1}/{steps_per_epoch}, "
-                        f"Loss: {metrics.loss:.4f}, RMSE: {metrics.rmse:.4f}"
-                    )
-                
+                train_rmses.append(float(metrics.rmse))                
             except StopIteration:
                 logger.warning("Training dataset exhausted before completing epoch")
                 break
@@ -505,34 +571,15 @@ def train_model(
             # Update history
             history['val_loss'].append(float(val_loss))
             history['val_rmse'].append(float(val_rmse))
-            
-        # Save visualization of last frame
-        if False:#save_checkpoint_dir is not None:
-            # Get last frame from validation set if available
-            try:
-                import os
-                if val_dataset_fn is not None:
-                    val_dataset = val_dataset_fn()
-                    last_rgb_batch, last_mask_batch, _ = next(val_dataset)
-                    
-                    # Get last image from batch
-                    last_image = last_rgb_batch[0, -1]  # Last frame of first sequence
-                    
-                    # Detect pedestrians
-                    from trajectory_utils import detect_pedestrians_yolo_onnx, visualize_and_save_detections
-                    pedestrians, _ = detect_pedestrians_yolo_onnx(
-                        last_image, 
-                        session=ort.InferenceSession(
-                            "/home/jack/src/attention/models/yolo11n.onnx",
-                            providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
-                        )
-                    )
-            
-                    # Save visualization
-                    output_path = os.path.join(save_checkpoint_dir, f"people_epoch_{epoch+1}.png")
-                    visualize_and_save_detections(last_image, pedestrians, output_path)
-            except Exception as e:
-                logger.error(f"Error saving visualization: {e}")
+            # Inside the epoch loop, after calculating epoch metrics:
+        if summary_writer:
+            # Log metrics to TensorBoard
+            summary_writer.add_scalar('Loss/train', float(epoch_loss), epoch)
+            summary_writer.add_scalar('RMSE/train', float(epoch_rmse), epoch)
+        
+            if val_dataset_fn is not None and val_losses:
+                summary_writer.add_scalar('Loss/val', float(val_loss), epoch)
+                summary_writer.add_scalar('RMSE/val', float(val_rmse), epoch)
 
         # Log epoch summary
         epoch_time = time.time() - start_time
@@ -563,7 +610,11 @@ def train_model(
                 pickle.dump(checkpoint, f)
             
             logger.info(f"Saved checkpoint to {checkpoint_path}")
-    
+
+    # Close the TensorBoard writer at the end
+    if summary_writer:
+        summary_writer.close()
+            
     # Return final state and history
     return {
         'state': state,

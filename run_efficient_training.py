@@ -42,6 +42,8 @@ def main():
                         help="Embedding dimension")
     parser.add_argument("--num_heads", type=int, default=4,
                         help="Number of attention heads")
+    parser.add_argument("--tensorboard_dir", type=str, default="./log_dir",
+                    help="Directory to save TensorBoard logs")
     parser.add_argument("--resume_checkpoint", type=str, default=None,
                     help="Path to checkpoint file to resume training from")
 
@@ -109,6 +111,7 @@ def main():
         embedding_dim=args.embedding_dim,
         num_heads=args.num_heads,
         debug_image_dir=os.path.join(args.output_dir, "debug_images"),
+        tensorboard_dir=args.tensorboard_dir,
         resume_checkpoint=args.resume_checkpoint
     )
     

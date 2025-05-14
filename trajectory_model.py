@@ -1,4 +1,6 @@
 import os
+import pickle
+import time 
 from typing import Dict, Tuple, List, Callable, Iterator, Optional, Any, NamedTuple
 import jax
 import jax.numpy as jnp
@@ -13,11 +15,68 @@ import onnxruntime as ort
 from functools import partial
 #from utils.trajectory_utils import ModelConfig, TrajectorySequence
 from trajectory_utils import ModelConfig, TrajectorySequence, write_debug_images
+from preprocess_dataset import create_memmap_batch_provider
 
 # Configure logging
 logger = logging.getLogger("trajectory_model")
     
 class FrameEncoder(nn.Module):
+    """CNN encoder that returns intermediate feature maps for skip connections."""
+    out_channels: Tuple[int, int, int] = (32, 64, 64)
+    
+    @nn.compact
+    def __call__(self, x, *, training: bool):
+        features = []
+        
+        # First convolution: 320→80 (stride 4)
+        x = nn.Conv(self.out_channels[0], (8, 8), (4, 4))(x)
+        x = nn.LayerNorm()(x)
+        x = nn.relu(x)
+        features.append(x)  # First skip connection feature
+        
+        # Second convolution: 80→40 (stride 2)
+        x = nn.Conv(self.out_channels[1], (4, 4), (2, 2))(x)
+        x = nn.LayerNorm()(x)
+        x = nn.relu(x)
+        features.append(x)  # Second skip connection feature
+        
+        # Third convolution: 40→40 (stride 1)
+        x = nn.Conv(self.out_channels[2], (3, 3), (1, 1))(x)
+        x = nn.LayerNorm()(x)
+        x = nn.relu(x)
+        features.append(x)  # Final feature map
+        
+        return x  # Return only the final features for backward compatibility
+    
+    def apply_intermediate(self, variables, x, *, training: bool):
+        """Apply the model and return intermediate feature maps."""
+        features = []
+        
+        # Apply each layer and collect outputs
+        params = variables['params']
+        
+        # First convolution: 320→80 (stride 4)
+        x = nn.Conv(self.out_channels[0], (8, 8), (4, 4)).apply({'params': params['Conv_0']}, x)
+        x = nn.LayerNorm().apply({'params': params['LayerNorm_0']}, x)
+        x = nn.relu(x)
+        features.append(x)  # Scale 1/4
+        
+        # Second convolution: 80→40 (stride 2)
+        x = nn.Conv(self.out_channels[1], (4, 4), (2, 2)).apply({'params': params['Conv_1']}, x)
+        x = nn.LayerNorm().apply({'params': params['LayerNorm_1']}, x)
+        x = nn.relu(x)
+        features.append(x)  # Scale 1/8
+        
+        # Third convolution: 40→40 (stride 1)
+        x = nn.Conv(self.out_channels[2], (3, 3), (1, 1)).apply({'params': params['Conv_2']}, x)
+        x = nn.LayerNorm().apply({'params': params['LayerNorm_2']}, x)
+        x = nn.relu(x)
+        features.append(x)  # Scale 1/8 (refined)
+        
+        return features
+
+
+class FrameEncoder_old(nn.Module):
     """Shared CNN applied to RGB or mask frames."""
     out_channels: Tuple[int, int, int] = (32, 64, 64)
 
@@ -54,8 +113,243 @@ def np_to_jax_batch(
     )
     
 
-
 class SpatiotemporalAttention(nn.Module):
+    config: ModelConfig
+    
+    @nn.compact
+    def __call__(self, rgb_frames, mask_frames, *, training=False):
+        B, T, H, W, _ = rgb_frames.shape
+        
+        # Original shared encoders
+        rgb_encoder = FrameEncoder(name="rgb_enc")
+        mask_encoder = FrameEncoder(out_channels=(16, 32, 32), name="mask_enc")
+        
+        # Define functions with fixed training parameter
+        def encode_rgb(frame):
+            return rgb_encoder(frame, training=training)
+        
+        def encode_mask(frame):
+            return mask_encoder(frame, training=training)
+        
+        # Apply encoders to each frame to get final features
+        rgb_feats = jax.vmap(encode_rgb, in_axes=1, out_axes=1)(rgb_frames)  # [B, T, H', W', C1]
+        mask_feats = jax.vmap(encode_mask, in_axes=1, out_axes=1)(mask_frames)  # [B, T, H', W', C2]
+        
+        # Concatenate features along the channel dimension
+        feats = jnp.concatenate([rgb_feats, mask_feats], axis=-1)  # [B, T, H', W', C]
+        
+        # Get dimensions after convolutions
+        B, T, H_enc, W_enc, C = feats.shape
+        
+        # Reshape to tokens: flatten spatial dimensions to tokens
+        feats = feats.reshape(B, T * H_enc * W_enc, C)  # [B, T*H'*W', C]
+        
+        # Project to embedding dimension
+        feats = nn.Dense(self.config.embedding_dim)(feats)
+        feats = nn.LayerNorm()(feats)
+        
+        # Add positional encoding
+        pos = self.param("pos_embedding",
+                        nn.initializers.normal(0.02),
+                        (1, T * H_enc * W_enc, self.config.embedding_dim))
+        feats = feats + pos
+        
+        # Self-attention over the tokens
+        attn_output = nn.SelfAttention(
+            num_heads=self.config.num_heads,
+            qkv_features=self.config.embedding_dim,
+            dropout_rate=self.config.dropout_rate
+        )(feats, deterministic=not training)
+        
+        feats = nn.LayerNorm()(feats + attn_output)
+        
+        # Project features before decoding
+        feats = nn.Dense(self.config.embedding_dim)(feats)
+        feats = nn.relu(feats)
+        feats = nn.Dropout(self.config.dropout_rate)(feats, deterministic=not training)
+        
+        # Reshape back to spatial representation
+        feats = feats.reshape(B, T, H_enc, W_enc, self.config.embedding_dim)
+        
+        # Pool over time dimension - mean pooling
+        feats = feats.mean(axis=1)  # [B, H_enc, W_enc, embedding_dim]
+        
+        # ------ Create skip connections ------
+        # We need to manually create intermediate features at different scales
+        # These are the same scales that would be produced by the encoder
+        
+        # For RGB: Process at 80x80 and 40x40 scales
+        skip_80_rgb = jax.vmap(
+            lambda frame: nn.Conv(self.config.feature_dim, (8, 8), (4, 4))(frame), 
+            in_axes=1, out_axes=1
+        )(rgb_frames)
+        skip_80_rgb = jax.vmap(lambda x: nn.LayerNorm()(x), in_axes=1, out_axes=1)(skip_80_rgb)
+        skip_80_rgb = jax.vmap(lambda x: nn.relu(x), in_axes=1, out_axes=1)(skip_80_rgb)
+        
+        # For masks: Process at 80x80 scale
+        skip_80_mask = jax.vmap(
+            lambda frame: nn.Conv(16, (8, 8), (4, 4))(frame), 
+            in_axes=1, out_axes=1
+        )(mask_frames)
+        skip_80_mask = jax.vmap(lambda x: nn.LayerNorm()(x), in_axes=1, out_axes=1)(skip_80_mask)
+        skip_80_mask = jax.vmap(lambda x: nn.relu(x), in_axes=1, out_axes=1)(skip_80_mask)
+        
+        # Combine and pool across time
+        skip_80 = jnp.concatenate([skip_80_rgb, skip_80_mask], axis=-1).mean(axis=1)
+        
+        # ------ U-Net decoder with skip connections ------
+        x = feats  # Start from bottleneck [B, 40, 40, embedding_dim]
+        C = self.config.embedding_dim
+        
+        # First up-block: 40→80
+        x = nn.ConvTranspose(C//2, (4, 4), (2, 2), padding='SAME')(x)
+        x = nn.LayerNorm()(x)
+        x = nn.relu(x)
+        
+        # Concatenate with 80x80 features
+        x = jnp.concatenate([x, skip_80], axis=-1)
+        
+        # Second up-block: 80→160
+        x = nn.ConvTranspose(C//4, (4, 4), (2, 2), padding='SAME')(x)
+        x = nn.LayerNorm()(x)
+        x = nn.relu(x)
+        
+        # Third up-block: 160→320
+        x = nn.ConvTranspose(C//8, (4, 4), (2, 2), padding='SAME')(x)
+        x = nn.LayerNorm()(x)
+        x = nn.relu(x)
+        
+        # Final 3x3 conv to get heatmap
+        x = nn.Conv(1, (3, 3), padding='SAME')(x)
+        
+        return nn.sigmoid(x)
+
+
+class SpatiotemporalAttention_temp(nn.Module):
+    config: ModelConfig
+    
+    @nn.compact
+    def __call__(self, rgb_frames, mask_frames, *, training=False):
+        B, T, H, W, _ = rgb_frames.shape
+        
+        rgb_encoder = FrameEncoder(name="rgb_enc")
+        mask_encoder = FrameEncoder(out_channels=(16, 32, 32), name="mask_enc")
+        
+        # Define functions with fixed training parameter
+        def encode_rgb(frame):
+            return rgb_encoder(frame, training=training)
+        
+        def encode_mask(frame):
+            return mask_encoder(frame, training=training)
+        
+        # ----- Collect encoder feature maps at each level -----
+        # We'll track intermediate features from each frame
+        rgb_features_all_levels = []
+        mask_features_all_levels = []
+        
+        # Process each frame separately and collect all intermediate features
+        for t in range(T):
+            # Get features for this frame at all resolution levels
+            rgb_frame_features = rgb_encoder.apply_intermediate(
+                {'params': self.variables['params']['rgb_enc']}, 
+                rgb_frames[:, t], 
+                training=training
+            )
+            
+            mask_frame_features = mask_encoder.apply_intermediate(
+                {'params': self.variables['params']['mask_enc']}, 
+                mask_frames[:, t], 
+                training=training
+            )
+            
+            # Append to our per-level lists
+            for level_idx, features in enumerate(rgb_frame_features):
+                if t == 0:
+                    # Initialize the list for this level
+                    rgb_features_all_levels.append([])
+                    mask_features_all_levels.append([])
+                
+                rgb_features_all_levels[level_idx].append(features)
+                mask_features_all_levels[level_idx].append(mask_frame_features[level_idx])
+        
+        # Stack frame features at each level into a single tensor (B, T, H', W', C)
+        rgb_feature_levels = [jnp.stack(level_features, axis=1) for level_features in rgb_features_all_levels]
+        mask_feature_levels = [jnp.stack(level_features, axis=1) for level_features in mask_features_all_levels]
+        
+        # Concatenate RGB and mask features at each level
+        feature_levels = [
+            jnp.concatenate([rgb_level, mask_level], axis=-1)
+            for rgb_level, mask_level in zip(rgb_feature_levels, mask_feature_levels)
+        ]
+        
+        # Use the final level features for transformer processing
+        feats = feature_levels[-1]  # [B, T, H_enc, W_enc, C]
+        
+        # Reshape to tokens for attention
+        B, T, H_enc, W_enc, C = feats.shape
+        feats = feats.reshape(B, T * H_enc * W_enc, C)
+        
+        # Project to embedding dimension
+        feats = nn.Dense(self.config.embedding_dim)(feats)
+        feats = nn.LayerNorm()(feats)
+        
+        # Add positional encoding
+        pos = self.param("pos_embedding",
+                        nn.initializers.normal(0.02),
+                        (1, T * H_enc * W_enc, self.config.embedding_dim))
+        feats = feats + pos
+        
+        # Self-attention over the tokens
+        attn_output = nn.SelfAttention(
+            num_heads=self.config.num_heads,
+            qkv_features=self.config.embedding_dim,
+            dropout_rate=self.config.dropout_rate
+        )(feats, deterministic=not training)
+        
+        feats = nn.LayerNorm()(feats + attn_output)
+        
+        # Project features before decoding
+        feats = nn.Dense(self.config.embedding_dim)(feats)
+        feats = nn.relu(feats)
+        feats = nn.Dropout(self.config.dropout_rate)(feats, deterministic=not training)
+        
+        # Reshape back to spatial representation
+        feats = feats.reshape(B, T, H_enc, W_enc, self.config.embedding_dim)
+        
+        # Pool over time dimension - mean pooling
+        feats = feats.mean(axis=1)  # [B, H', W', C]
+        
+        # Time-average features at each level for skip connections
+        skip_features = [level.mean(axis=1) for level in feature_levels[:-1]]
+        
+        # U-Net decoder with skip connections
+        # Start from bottleneck (40x40)
+        x = feats  # [B, 40, 40, embedding_dim]
+        
+        # First up-block: 40→80 and concatenate with 80x80 features
+        x = nn.ConvTranspose(self.config.embedding_dim//2, (4, 4), (2, 2), padding='SAME')(x)
+        x = nn.LayerNorm()(x)
+        x = nn.relu(x)
+        x = jnp.concatenate([x, skip_features[1]], axis=-1)  # Skip connection
+        
+        # Second up-block: 80→160 and concatenate with 160x160 features
+        x = nn.ConvTranspose(self.config.embedding_dim//4, (4, 4), (2, 2), padding='SAME')(x)
+        x = nn.LayerNorm()(x)
+        x = nn.relu(x)
+        x = jnp.concatenate([x, skip_features[0]], axis=-1)  # Skip connection
+        
+        # Final up-block: 160→320
+        x = nn.ConvTranspose(self.config.embedding_dim//8, (4, 4), (2, 2), padding='SAME')(x)
+        x = nn.LayerNorm()(x)
+        x = nn.relu(x)
+        
+        # Final 1x1 conv to get heatmap
+        x = nn.Conv(1, (3, 3), padding='SAME')(x)
+        
+        return nn.sigmoid(x)
+
+
+class SpatiotemporalAttention_old(nn.Module):
     config: ModelConfig
     
     @nn.compact
@@ -181,8 +475,6 @@ def create_train_state(
     )
 
 
-import jax
-import jax.numpy as jnp
 
 def weighted_bce(pred, target, pos_w: float = 10.0, eps: float = 1e-6):
     """
@@ -256,6 +548,7 @@ def train_step(
     metrics = Metrics(loss=loss, rmse=rmse)
     
     return state, metrics, new_rng
+
 
 @jax.jit
 def train_step_old(
@@ -386,6 +679,7 @@ def train_model(
     #Initialize TensorBoard if directory is provided
     summary_writer = None
     if tensorboard_dir:
+        time_str = time.strftime("%m%d_%H%M")
         try:
             from torch.utils.tensorboard import SummaryWriter
             import os
@@ -394,7 +688,7 @@ def train_model(
             os.makedirs(tensorboard_dir, exist_ok=True)
             
             # Create SummaryWriter
-            summary_writer = SummaryWriter(log_dir=tensorboard_dir)
+            summary_writer = SummaryWriter(log_dir=tensorboard_dir + '/' + time_str)
             logger.info(f"TensorBoard logging enabled at {tensorboard_dir}")
         except ImportError:
             logger.warning("Could not import SummaryWriter, TensorBoard logging disabled")
@@ -476,7 +770,7 @@ def train_model(
             # the target heatmap for visualization or reload from the original dataset
     
             # Option 1: Only use what we already have
-            if debug_image_dir and ((epoch +1) % 10) == 0:
+            if debug_image_dir and (epoch +1) % 10 == 0:
                 # In train_model function, modify the debug visualization call:
                 write_debug_images(
                     rgb_frames, 
@@ -594,8 +888,6 @@ def train_model(
         # Save checkpoint
         if (
                 save_checkpoint_dir is not None) and (epoch % 10 == 0):
-            import os
-            import pickle
             os.makedirs(save_checkpoint_dir, exist_ok=True)
             
             checkpoint = {
@@ -644,3 +936,138 @@ def predict(
     return state.apply_fn({'params': state.params}, rgb_frames, mask_frames, training=False)
 
 
+def train_trajectory_model_efficient(
+    preprocessed_train_path: str,
+    preprocessed_val_path: str,
+    output_dir: str = "./model_output",
+    num_epochs: int = 3,
+    steps_per_epoch: Optional[int] = None,
+    batch_size: int = 8,
+    learning_rate: float = 1e-4,
+    embedding_dim: int = 256,
+    num_heads: int = 8,
+    debug_image_dir: Optional[str] = "./out_images",
+    tensorboard_dir: Optional[str] = "./log_dir", 
+    resume_checkpoint: Optional[str] = None,  # Add this parameter
+) -> Dict[str, Any]:
+    """
+    Train the model efficiently using preprocessed datasets.
+    
+    Args:
+        preprocessed_train_path: Path to preprocessed training data
+        preprocessed_val_path: Path to preprocessed validation data
+        output_dir: Directory to save model and outputs
+        num_epochs: Number of training epochs
+        steps_per_epoch: Number of steps per epoch (None = full dataset)
+        batch_size: Batch size
+        learning_rate: Learning rate
+        embedding_dim: Embedding dimension
+        num_heads: Number of attention heads
+        debug_image_dir: Directory to save debug images
+        
+    Returns:
+        Dictionary with trained state and training history
+    """
+    from trajectory_model import (
+        train_model,
+        ModelConfig,
+        create_train_state,
+        predict,
+        SpatiotemporalAttention
+    )
+    
+    logging.info(f"Starting efficient training with {num_epochs} epochs")
+    
+    # Create output directory
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Create batch providers
+    train_dataset_info = np.load(preprocessed_train_path, mmap_mode='r')
+    val_dataset_info = np.load(preprocessed_val_path, mmap_mode='r')
+    
+    # Get shape information from the datasets
+    rgb_shape = train_dataset_info['rgb'].shape
+    sequence_length = rgb_shape[1]
+    target_height = rgb_shape[2]
+    target_width = rgb_shape[3]
+    
+    # Determine steps_per_epoch if not provided
+    if steps_per_epoch is None:
+        steps_per_epoch = (rgb_shape[0] + batch_size - 1) // batch_size
+    
+    # Create batch providers
+    train_provider = create_memmap_batch_provider(
+        preprocessed_train_path,
+        batch_size=batch_size,
+        shuffle=True,
+        rng_seed=42
+    )
+    
+    val_provider = create_memmap_batch_provider(
+        preprocessed_val_path,
+        batch_size=batch_size,
+        shuffle=False,
+        rng_seed=42
+    )
+    
+    # Configure model
+    config = ModelConfig(
+        embedding_dim=embedding_dim,
+        num_heads=num_heads,
+        dropout_rate=0.1,
+        feature_dim=64,
+        max_len=5000,
+        sequence_length=sequence_length,
+        output_height=target_height,
+        output_width=target_width
+    )
+    
+    # Add prefetching to the batch providers (optional)
+    def prefetch_provider(provider, prefetch_size=2):
+        def prefetched_provider():
+            for batch in provider():
+                # Convert to JAX arrays and prefetch to device
+                rgb, mask, target = batch
+                rgb_jax = jax.device_put(jnp.array(rgb))
+                mask_jax = jax.device_put(jnp.array(mask))
+                target_jax = jax.device_put(jnp.array(target))
+                yield rgb_jax, mask_jax, target_jax
+        return prefetched_provider
+    
+    # Use prefetching if available
+    try:
+        train_dataset_fn = prefetch_provider(train_provider)
+        val_dataset_fn = prefetch_provider(val_provider)
+    except:
+        # Fall back to regular providers if prefetching fails
+        train_dataset_fn = train_provider
+        val_dataset_fn = val_provider
+    
+    # Train model
+    result = train_model(
+        train_dataset_fn=train_dataset_fn,
+        val_dataset_fn=val_dataset_fn,
+        config=config,
+        num_epochs=num_epochs,
+        steps_per_epoch=steps_per_epoch,
+        eval_steps=20,
+        learning_rate=learning_rate,
+        log_every=10,
+        save_checkpoint_dir=output_dir,
+        tensorboard_dir=tensorboard_dir, 
+        debug_image_dir=debug_image_dir,
+        resume_checkpoint=resume_checkpoint
+    )
+    
+    # Save final model
+    import pickle
+    final_model_path = os.path.join(output_dir, "final_model.pkl")
+    with open(final_model_path, 'wb') as f:
+        pickle.dump({
+            'params': result['state'].params,
+            'config': config._asdict()
+        }, f)
+    
+    logging.info(f"Final model saved to {final_model_path}")
+    
+    return result

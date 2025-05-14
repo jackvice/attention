@@ -1,5 +1,8 @@
 import os
 import glob
+
+import cv2
+import numpy as np
 import numpy as np
 import jax.numpy as jnp
 import cv2
@@ -881,11 +884,6 @@ def write_debug_images(
     Write input frames and prediction heatmap to image files for debugging.
     Shows how model predictions evolve during training.
     """
-    import os
-    import cv2
-    import numpy as np
-    from config_temporal import PAST_OFFSETS_F, FUTURE_OFFSET_F
-    
     # Create output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
     

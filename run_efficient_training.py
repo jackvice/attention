@@ -3,6 +3,8 @@ import argparse
 import logging
 import os
 from typing import Optional
+from trajectory_model import train_trajectory_model_efficient
+from preprocess_dataset import preprocess_dataset_memmap
 
 # very top of run_efficient_training.py  (before importing NumPy)
 import os, tempfile
@@ -57,7 +59,7 @@ def main():
     logger = logging.getLogger("efficient_trajectory")
     
     # Import necessary modules
-    from preprocess_dataset import preprocess_dataset_memmap, train_trajectory_model_efficient
+
     
     # Create preprocessed data directory
     os.makedirs(args.preprocessed_dir, exist_ok=True)

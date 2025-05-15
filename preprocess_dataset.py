@@ -4,6 +4,7 @@ import os
 import numpy as np
 import jax.numpy as jnp
 import jax
+import onnxruntime as ort
 from pathlib import Path
 import time
 import logging
@@ -143,7 +144,7 @@ def preprocess_dataset_memmap(
     logging.info(f"Created {len(all_frame_sequences)} total frame sequences")
     
     # Set up a YOLO session to be reused
-    import onnxruntime as ort
+
     yolo_session = ort.InferenceSession(
         yolo_model_path,
         providers=['CUDAExecutionProvider', 'CPUExecutionProvider']

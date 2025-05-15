@@ -19,75 +19,34 @@ from preprocess_dataset import create_memmap_batch_provider
 
 # Configure logging
 logger = logging.getLogger("trajectory_model")
-    
+
 class FrameEncoder(nn.Module):
-    """CNN encoder that returns intermediate feature maps for skip connections."""
+    """CNN applied to RGB or mask frames."""
     out_channels: Tuple[int, int, int] = (32, 64, 64)
-    
+
     @nn.compact
     def __call__(self, x, *, training: bool):
-        features = []
+        skips = []  # Store intermediate feature maps for skip connections
         
         # First convolution: 320→80 (stride 4)
         x = nn.Conv(self.out_channels[0], (8, 8), (4, 4))(x)
         x = nn.LayerNorm()(x)
         x = nn.relu(x)
-        features.append(x)  # First skip connection feature
+        skips.append(x)  # Save 80×80 features
         
         # Second convolution: 80→40 (stride 2)
         x = nn.Conv(self.out_channels[1], (4, 4), (2, 2))(x)
         x = nn.LayerNorm()(x)
         x = nn.relu(x)
-        features.append(x)  # Second skip connection feature
+        skips.append(x)  # Save 40×40 features
         
         # Third convolution: 40→40 (stride 1)
         x = nn.Conv(self.out_channels[2], (3, 3), (1, 1))(x)
         x = nn.LayerNorm()(x)
         x = nn.relu(x)
-        features.append(x)  # Final feature map
         
-        return x  # Return only the final features for backward compatibility
-    
-    def apply_intermediate(self, variables, x, *, training: bool):
-        """Apply the model and return intermediate feature maps."""
-        features = []
-        
-        # Apply each layer and collect outputs
-        params = variables['params']
-        
-        # First convolution: 320→80 (stride 4)
-        x = nn.Conv(self.out_channels[0], (8, 8), (4, 4)).apply({'params': params['Conv_0']}, x)
-        x = nn.LayerNorm().apply({'params': params['LayerNorm_0']}, x)
-        x = nn.relu(x)
-        features.append(x)  # Scale 1/4
-        
-        # Second convolution: 80→40 (stride 2)
-        x = nn.Conv(self.out_channels[1], (4, 4), (2, 2)).apply({'params': params['Conv_1']}, x)
-        x = nn.LayerNorm().apply({'params': params['LayerNorm_1']}, x)
-        x = nn.relu(x)
-        features.append(x)  # Scale 1/8
-        
-        # Third convolution: 40→40 (stride 1)
-        x = nn.Conv(self.out_channels[2], (3, 3), (1, 1)).apply({'params': params['Conv_2']}, x)
-        x = nn.LayerNorm().apply({'params': params['LayerNorm_2']}, x)
-        x = nn.relu(x)
-        features.append(x)  # Scale 1/8 (refined)
-        
-        return features
-
-
-class FrameEncoder_old(nn.Module):
-    """Shared CNN applied to RGB or mask frames."""
-    out_channels: Tuple[int, int, int] = (32, 64, 64)
-
-    @nn.compact
-    def __call__(self, x, *, training: bool):
-        for i, ch in enumerate(self.out_channels):
-            x = nn.Conv(ch, (8, 8) if i == 0 else (4, 4) if i == 1 else (3, 3),
-                        (4, 4) if i == 0 else (2, 2) if i == 1 else (1, 1))(x)
-            x = nn.LayerNorm()(x)  # Replace BatchNorm with LayerNorm
-            x = nn.relu(x)
-        return x
+        # Return both final features and skip connections
+        return x, tuple(skips)
 
 
 def np_to_jax_batch(
@@ -113,6 +72,12 @@ def np_to_jax_batch(
     )
     
 
+class Metrics(NamedTuple):
+    """Training metrics."""
+    loss: float
+    rmse: float
+
+
 class SpatiotemporalAttention(nn.Module):
     config: ModelConfig
     
@@ -120,23 +85,34 @@ class SpatiotemporalAttention(nn.Module):
     def __call__(self, rgb_frames, mask_frames, *, training=False):
         B, T, H, W, _ = rgb_frames.shape
         
-        # Original shared encoders
         rgb_encoder = FrameEncoder(name="rgb_enc")
         mask_encoder = FrameEncoder(out_channels=(16, 32, 32), name="mask_enc")
         
         # Define functions with fixed training parameter
+        # Properly flatten the tuple returns for vmap
         def encode_rgb(frame):
-            return rgb_encoder(frame, training=training)
+            feat, (s80, s40) = rgb_encoder(frame, training=training)
+            return feat, s80, s40  # Return 3 separate leaves for vmap
         
         def encode_mask(frame):
-            return mask_encoder(frame, training=training)
+            feat, (s80, s40) = mask_encoder(frame, training=training)
+            return feat, s80, s40  # Return 3 separate leaves for vmap
         
-        # Apply encoders to each frame to get final features
-        rgb_feats = jax.vmap(encode_rgb, in_axes=1, out_axes=1)(rgb_frames)  # [B, T, H', W', C1]
-        mask_feats = jax.vmap(encode_mask, in_axes=1, out_axes=1)(mask_frames)  # [B, T, H', W', C2]
+        # Apply encoders to each frame with correct out_axes to maintain (B,T,H,W,C) shape
+        rgb_out = jax.vmap(encode_rgb, in_axes=1, out_axes=(1,1,1))(rgb_frames)
+        mask_out = jax.vmap(encode_mask, in_axes=1, out_axes=(1,1,1))(mask_frames)
+        
+        # Unpack properly - each has shape [B,T,H,W,C]
+        rgb_feats, rgb_s80, rgb_s40 = rgb_out
+        mask_feats, mask_s80, mask_s40 = mask_out
         
         # Concatenate features along the channel dimension
         feats = jnp.concatenate([rgb_feats, mask_feats], axis=-1)  # [B, T, H', W', C]
+        
+        # Build skip connections with proper axis ordering
+        # Average over time (axis=1) for both 80x80 and 40x40 features
+        skip_80 = jnp.concatenate([rgb_s80, mask_s80], -1).mean(axis=1)  # 80×80
+        skip_40 = jnp.concatenate([rgb_s40, mask_s40], -1).mean(axis=1)  # 40×40
         
         # Get dimensions after convolutions
         B, T, H_enc, W_enc, C = feats.shape
@@ -172,263 +148,37 @@ class SpatiotemporalAttention(nn.Module):
         feats = feats.reshape(B, T, H_enc, W_enc, self.config.embedding_dim)
         
         # Pool over time dimension - mean pooling
-        feats = feats.mean(axis=1)  # [B, H_enc, W_enc, embedding_dim]
+        feats = feats.mean(axis=1)  # [B, H', W', C]
         
-        # ------ Create skip connections ------
-        # We need to manually create intermediate features at different scales
-        # These are the same scales that would be produced by the encoder
-        
-        # For RGB: Process at 80x80 and 40x40 scales
-        skip_80_rgb = jax.vmap(
-            lambda frame: nn.Conv(self.config.feature_dim, (8, 8), (4, 4))(frame), 
-            in_axes=1, out_axes=1
-        )(rgb_frames)
-        skip_80_rgb = jax.vmap(lambda x: nn.LayerNorm()(x), in_axes=1, out_axes=1)(skip_80_rgb)
-        skip_80_rgb = jax.vmap(lambda x: nn.relu(x), in_axes=1, out_axes=1)(skip_80_rgb)
-        
-        # For masks: Process at 80x80 scale
-        skip_80_mask = jax.vmap(
-            lambda frame: nn.Conv(16, (8, 8), (4, 4))(frame), 
-            in_axes=1, out_axes=1
-        )(mask_frames)
-        skip_80_mask = jax.vmap(lambda x: nn.LayerNorm()(x), in_axes=1, out_axes=1)(skip_80_mask)
-        skip_80_mask = jax.vmap(lambda x: nn.relu(x), in_axes=1, out_axes=1)(skip_80_mask)
-        
-        # Combine and pool across time
-        skip_80 = jnp.concatenate([skip_80_rgb, skip_80_mask], axis=-1).mean(axis=1)
-        
-        # ------ U-Net decoder with skip connections ------
+        # U-Net decoder with proper skip connections
         x = feats  # Start from bottleneck [B, 40, 40, embedding_dim]
         C = self.config.embedding_dim
         
-        # First up-block: 40→80
-        x = nn.ConvTranspose(C//2, (4, 4), (2, 2), padding='SAME')(x)
-        x = nn.LayerNorm()(x)
-        x = nn.relu(x)
+        # Add 1x1 projection after concatenation to control channel growth
+        x = nn.Conv(C, (1, 1))(jnp.concatenate([x, skip_40], axis=-1))
         
-        # Concatenate with 80x80 features
-        x = jnp.concatenate([x, skip_80], axis=-1)
+        # Define up_block for cleaner code
+        def up_block(x, out_ch):
+            x = nn.ConvTranspose(out_ch, (4, 4), (2, 2), padding='SAME')(x)
+            x = nn.LayerNorm()(x)
+            return nn.relu(x)
+        
+        # First up-block: 40→80
+        x = up_block(x, C//2)
+        
+        # Add 1x1 projection after concatenation to control channel growth
+        x = nn.Conv(C//2, (1, 1))(jnp.concatenate([x, skip_80], axis=-1))
         
         # Second up-block: 80→160
-        x = nn.ConvTranspose(C//4, (4, 4), (2, 2), padding='SAME')(x)
-        x = nn.LayerNorm()(x)
-        x = nn.relu(x)
+        x = up_block(x, C//4)
         
         # Third up-block: 160→320
-        x = nn.ConvTranspose(C//8, (4, 4), (2, 2), padding='SAME')(x)
-        x = nn.LayerNorm()(x)
-        x = nn.relu(x)
+        x = up_block(x, C//8)
         
-        # Final 3x3 conv to get heatmap
+        # Final conv to get heatmap
         x = nn.Conv(1, (3, 3), padding='SAME')(x)
         
         return nn.sigmoid(x)
-
-
-class SpatiotemporalAttention_temp(nn.Module):
-    config: ModelConfig
-    
-    @nn.compact
-    def __call__(self, rgb_frames, mask_frames, *, training=False):
-        B, T, H, W, _ = rgb_frames.shape
-        
-        rgb_encoder = FrameEncoder(name="rgb_enc")
-        mask_encoder = FrameEncoder(out_channels=(16, 32, 32), name="mask_enc")
-        
-        # Define functions with fixed training parameter
-        def encode_rgb(frame):
-            return rgb_encoder(frame, training=training)
-        
-        def encode_mask(frame):
-            return mask_encoder(frame, training=training)
-        
-        # ----- Collect encoder feature maps at each level -----
-        # We'll track intermediate features from each frame
-        rgb_features_all_levels = []
-        mask_features_all_levels = []
-        
-        # Process each frame separately and collect all intermediate features
-        for t in range(T):
-            # Get features for this frame at all resolution levels
-            rgb_frame_features = rgb_encoder.apply_intermediate(
-                {'params': self.variables['params']['rgb_enc']}, 
-                rgb_frames[:, t], 
-                training=training
-            )
-            
-            mask_frame_features = mask_encoder.apply_intermediate(
-                {'params': self.variables['params']['mask_enc']}, 
-                mask_frames[:, t], 
-                training=training
-            )
-            
-            # Append to our per-level lists
-            for level_idx, features in enumerate(rgb_frame_features):
-                if t == 0:
-                    # Initialize the list for this level
-                    rgb_features_all_levels.append([])
-                    mask_features_all_levels.append([])
-                
-                rgb_features_all_levels[level_idx].append(features)
-                mask_features_all_levels[level_idx].append(mask_frame_features[level_idx])
-        
-        # Stack frame features at each level into a single tensor (B, T, H', W', C)
-        rgb_feature_levels = [jnp.stack(level_features, axis=1) for level_features in rgb_features_all_levels]
-        mask_feature_levels = [jnp.stack(level_features, axis=1) for level_features in mask_features_all_levels]
-        
-        # Concatenate RGB and mask features at each level
-        feature_levels = [
-            jnp.concatenate([rgb_level, mask_level], axis=-1)
-            for rgb_level, mask_level in zip(rgb_feature_levels, mask_feature_levels)
-        ]
-        
-        # Use the final level features for transformer processing
-        feats = feature_levels[-1]  # [B, T, H_enc, W_enc, C]
-        
-        # Reshape to tokens for attention
-        B, T, H_enc, W_enc, C = feats.shape
-        feats = feats.reshape(B, T * H_enc * W_enc, C)
-        
-        # Project to embedding dimension
-        feats = nn.Dense(self.config.embedding_dim)(feats)
-        feats = nn.LayerNorm()(feats)
-        
-        # Add positional encoding
-        pos = self.param("pos_embedding",
-                        nn.initializers.normal(0.02),
-                        (1, T * H_enc * W_enc, self.config.embedding_dim))
-        feats = feats + pos
-        
-        # Self-attention over the tokens
-        attn_output = nn.SelfAttention(
-            num_heads=self.config.num_heads,
-            qkv_features=self.config.embedding_dim,
-            dropout_rate=self.config.dropout_rate
-        )(feats, deterministic=not training)
-        
-        feats = nn.LayerNorm()(feats + attn_output)
-        
-        # Project features before decoding
-        feats = nn.Dense(self.config.embedding_dim)(feats)
-        feats = nn.relu(feats)
-        feats = nn.Dropout(self.config.dropout_rate)(feats, deterministic=not training)
-        
-        # Reshape back to spatial representation
-        feats = feats.reshape(B, T, H_enc, W_enc, self.config.embedding_dim)
-        
-        # Pool over time dimension - mean pooling
-        feats = feats.mean(axis=1)  # [B, H', W', C]
-        
-        # Time-average features at each level for skip connections
-        skip_features = [level.mean(axis=1) for level in feature_levels[:-1]]
-        
-        # U-Net decoder with skip connections
-        # Start from bottleneck (40x40)
-        x = feats  # [B, 40, 40, embedding_dim]
-        
-        # First up-block: 40→80 and concatenate with 80x80 features
-        x = nn.ConvTranspose(self.config.embedding_dim//2, (4, 4), (2, 2), padding='SAME')(x)
-        x = nn.LayerNorm()(x)
-        x = nn.relu(x)
-        x = jnp.concatenate([x, skip_features[1]], axis=-1)  # Skip connection
-        
-        # Second up-block: 80→160 and concatenate with 160x160 features
-        x = nn.ConvTranspose(self.config.embedding_dim//4, (4, 4), (2, 2), padding='SAME')(x)
-        x = nn.LayerNorm()(x)
-        x = nn.relu(x)
-        x = jnp.concatenate([x, skip_features[0]], axis=-1)  # Skip connection
-        
-        # Final up-block: 160→320
-        x = nn.ConvTranspose(self.config.embedding_dim//8, (4, 4), (2, 2), padding='SAME')(x)
-        x = nn.LayerNorm()(x)
-        x = nn.relu(x)
-        
-        # Final 1x1 conv to get heatmap
-        x = nn.Conv(1, (3, 3), padding='SAME')(x)
-        
-        return nn.sigmoid(x)
-
-
-class SpatiotemporalAttention_old(nn.Module):
-    config: ModelConfig
-    
-    @nn.compact
-    def __call__(self, rgb_frames, mask_frames, *, training=False):  # `__call__` not `**call**`
-        B, T, H, W, _ = rgb_frames.shape  # Use underscore instead of *
-        
-        rgb_encoder = FrameEncoder(name="rgb_enc")
-        mask_encoder = FrameEncoder(out_channels=(16, 32, 32), name="mask_enc")
-        
-        # Define functions with fixed training parameter
-        def encode_rgb(frame):
-            return rgb_encoder(frame, training=training)
-        
-        def encode_mask(frame):
-            return mask_encoder(frame, training=training)
-        
-        # Apply encoders to each frame
-        rgb_feats = jax.vmap(encode_rgb, in_axes=1, out_axes=1)(rgb_frames)  # [B, T, H', W', C1]
-        mask_feats = jax.vmap(encode_mask, in_axes=1, out_axes=1)(mask_frames)  # [B, T, H', W', C2]
-        
-        # Concatenate features along the channel dimension
-        feats = jnp.concatenate([rgb_feats, mask_feats], axis=-1)  # [B, T, H', W', C]
-        
-        # Get dimensions after convolutions
-        B, T, H_enc, W_enc, C = feats.shape
-        
-        # Reshape to tokens: flatten spatial dimensions to tokens
-        feats = feats.reshape(B, T * H_enc * W_enc, C)  # [B, T*H'*W', C]
-        
-        # Project to embedding dimension
-        feats = nn.Dense(self.config.embedding_dim)(feats)
-        feats = nn.LayerNorm()(feats)
-        
-        # Add positional encoding - modified for token approach
-        pos = self.param("pos_embedding",
-                        nn.initializers.normal(0.02),
-                        (1, T * H_enc * W_enc, self.config.embedding_dim))
-        feats = feats + pos
-        
-        # Self-attention over the tokens
-        attn_output = nn.SelfAttention(
-            num_heads=self.config.num_heads,
-            qkv_features=self.config.embedding_dim,
-            dropout_rate=self.config.dropout_rate
-        )(feats, deterministic=not training)
-        
-        feats = nn.LayerNorm()(feats + attn_output)
-        
-        # Project features before decoding
-        feats = nn.Dense(self.config.embedding_dim)(feats)
-        feats = nn.relu(feats)
-        feats = nn.Dropout(self.config.dropout_rate)(feats, deterministic=not training)
-        
-        # Reshape back to spatial representation
-        feats = feats.reshape(B, T, H_enc, W_enc, self.config.embedding_dim)
-        
-        # Pool over time dimension - mean pooling instead of last frame
-        feats = feats.mean(axis=1)  # [B, H', W', C]
-        
-        # Full 8× decoder
-        def up_block(x, out_ch): 
-            x = nn.ConvTranspose(out_ch, (4, 4), (2, 2), padding='SAME')(x) 
-            x = nn.LayerNorm()(x) 
-            return nn.relu(x) 
-        
-        # Upsampling decoder
-        x = up_block(feats, self.config.embedding_dim//2)  # 40→80 
-        x = up_block(x, self.config.embedding_dim//4)      # 80→160 
-        x = up_block(x, self.config.embedding_dim//8)      # 160→320 
-        x = nn.Conv(1, (3, 3), padding='SAME')(x)          # (B, 320, 320, 1) 
-        
-        return nn.sigmoid(x)  # Return the final heatmap
-
-
-
-class Metrics(NamedTuple):
-    """Training metrics."""
-    loss: float
-    rmse: float
 
 
 def create_train_state(
@@ -475,7 +225,6 @@ def create_train_state(
     )
 
 
-
 def weighted_bce(pred, target, pos_w: float = 10.0, eps: float = 1e-6):
     """
     pred   : sigmoid probabilities  ∈ (0,1)   [B,H,W,1]
@@ -516,6 +265,7 @@ def train_step(
         )
         
         # --- numerically stable BCE with class weighting ---
+        """
         epsilon = 1e-7
         pos_weight = 10.0
         
@@ -530,7 +280,9 @@ def train_step(
         neg_loss = -jnp.sum(neg_mask * jnp.log1p(-pred)) / jnp.maximum(neg_mask.sum(), 1)
         
         loss = pos_loss + neg_loss
-        
+        """
+        loss = combined_loss(predictions, target_batch, focal_weight=1.0, dice_weight=1.0)
+
         # Optional debugging to detect NaNs early
         # Uncomment this to stop immediately when NaNs appear
         # jax.debug.callback(lambda l: jnp.any(jnp.isnan(l)), loss)
@@ -544,63 +296,6 @@ def train_step(
     state = state.apply_gradients(grads=grads)
     
     # Calculate RMSE metric (this doesn't affect training)
-    rmse = jnp.sqrt(jnp.mean((predictions - target_batch) ** 2))
-    metrics = Metrics(loss=loss, rmse=rmse)
-    
-    return state, metrics, new_rng
-
-
-@jax.jit
-def train_step_old(
-    state: train_state.TrainState,
-    rgb_batch: jnp.ndarray,
-    mask_batch: jnp.ndarray,
-    target_batch: jnp.ndarray,
-    rng: jnp.ndarray
-) -> Tuple[train_state.TrainState, Metrics, jnp.ndarray]:
-    """Perform a single training step with spatial heatmap prediction."""
-    # Split random key for dropout
-    new_rng, dropout_rng = random.split(rng)
-    
-    # Define loss function
-    def loss_fn(params):
-        predictions = state.apply_fn(
-            {'params': params},
-            rgb_batch, mask_batch,
-            training=True,
-            rngs={'dropout': dropout_rng}
-        )
-        
-        # --- 3) Weighted loss to handle empty frames ---
-        # Check if target has any positive pixels
-        has_target = jnp.sum(target_batch, axis=(1, 2, 3)) > 0
-        
-        # Weighted BCE loss - we calculate separately for positive and negative pixels
-        epsilon = 1e-7
-        pos_weight = 10.0  # Weight for positive pixels
-        
-        # Positive pixels loss (weighted higher)
-        pos_pixels = target_batch > 0
-        pos_loss = -pos_weight * jnp.mean(
-            target_batch * jnp.log(predictions + epsilon),
-            where=pos_pixels
-        )
-        
-        # Negative pixels loss
-        neg_pixels = ~pos_pixels
-        neg_loss = -jnp.mean(
-            (1 - target_batch) * jnp.log(1 - predictions + epsilon),
-            where=neg_pixels
-        )
-        
-        # Combined loss
-        loss = pos_loss + neg_loss
-        
-        return loss, predictions
-    
-    # Rest of function remains the same
-    (loss, predictions), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
-    state = state.apply_gradients(grads=grads)
     rmse = jnp.sqrt(jnp.mean((predictions - target_batch) ** 2))
     metrics = Metrics(loss=loss, rmse=rmse)
     
@@ -934,6 +629,81 @@ def predict(
     """
     # Use the model from the state directly
     return state.apply_fn({'params': state.params}, rgb_frames, mask_frames, training=False)
+
+
+def focal_loss(pred, target, alpha=0.25, gamma=2.0, eps=1e-6):
+    """
+    Focal loss for binary classification.
+    
+    Args:
+        pred: Predicted probabilities [B,H,W,1]
+        target: Target heatmap [B,H,W,1]
+        alpha: Weighting factor for rare class
+        gamma: Focusing parameter (higher = more focus on hard examples)
+        eps: Small constant for numerical stability
+        
+    Returns:
+        Focal loss value
+    """
+    # Convert target to binary
+    target_bin = jnp.where(target > 0.0, 1.0, 0.0)
+    
+    # Calculate focal weights
+    pt = jnp.where(target_bin == 1, pred, 1 - pred)
+    focal_weight = alpha * jnp.power(1 - pt, gamma)
+    
+    # Standard BCE loss
+    bce = -(target_bin * jnp.log(pred + eps) + (1 - target_bin) * jnp.log(1 - pred + eps))
+    
+    # Apply focal weights
+    focal = focal_weight * bce
+    
+    return jnp.mean(focal)
+
+
+def dice_loss(pred, target, smooth=1.0):
+    """
+    Dice loss for binary segmentation.
+    
+    Args:
+        pred: Predicted probabilities [B,H,W,1]
+        target: Target heatmap [B,H,W,1]
+        smooth: Smoothing constant for numerical stability
+        
+    Returns:
+        Dice loss value
+    """
+    # Flatten predictions and targets
+    pred_flat = pred.reshape(-1)
+    target_flat = jnp.where(target.reshape(-1) > 0.0, 1.0, 0.0)
+    
+    # Calculate intersection and union
+    intersection = jnp.sum(pred_flat * target_flat)
+    
+    # Original Dice coefficient: 2*|A∩B|/(|A|+|B|)
+    dice = (2.0 * intersection + smooth) / (jnp.sum(pred_flat) + jnp.sum(target_flat) + smooth)
+    
+    # Return Dice loss (1 - Dice coefficient)
+    return 1.0 - dice
+
+
+def combined_loss(pred, target, focal_weight=1.0, dice_weight=1.0):
+    """
+    Combined focal and Dice loss.
+    
+    Args:
+        pred: Predicted probabilities [B,H,W,1]
+        target: Target heatmap [B,H,W,1]
+        focal_weight: Weight for focal loss
+        dice_weight: Weight for Dice loss
+        
+    Returns:
+        Combined loss value
+    """
+    f_loss = focal_loss(pred, target)
+    d_loss = dice_loss(pred, target)
+    
+    return focal_weight * f_loss + dice_weight * d_loss
 
 
 def train_trajectory_model_efficient(

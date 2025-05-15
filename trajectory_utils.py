@@ -138,7 +138,6 @@ def _dataset_signature(dataset_root: str, params: Dict[str, Any]) -> str:
     parts.append(json.dumps(params, sort_keys=True).encode())
     return _sha1(b"".join(parts))
 
-
     
 def detect_pedestrians_yolo_onnx(
     image: np.ndarray,
@@ -539,8 +538,8 @@ def compute_trajectories(
             future_pedestrians = detect_fn(future_img)
         
         # Skip sequences with no pedestrians in the future frame
-        if len(future_pedestrians) == 0:
-            continue
+        #if len(future_pedestrians) == 0:
+        #    continue
         
         # Track pedestrians across frames
         trajectories = track_pedestrians_simple(
@@ -562,88 +561,6 @@ def compute_trajectories(
     return trajectory_sequences
 
     
-def compute_trajectories_old(
-    frame_sequences: List[Tuple[List[Frame], Frame]],  # Changed from List[List[Frame]]
-    detect_fn: Callable[[np.ndarray], List[Pedestrian]],
-    target_width: int = 320,
-    target_height: int = 320,
-    min_track_length: int = 3,
-    yolo_model_path: str = "yolo11n.onnx"
-) -> List[TrajectorySequence]:
-
-    """
-    Compute pedestrian trajectories from frame sequences and generate future ground truth.
-    """
-    trajectory_sequences = []
-    
-    # Initialize YOLO session once for reuse
-    import onnxruntime as ort
-    yolo_session = None
-    
-    # Check if detect_fn is a YOLO detection function
-    is_yolo_detect = hasattr(detect_fn, '__code__') and 'session' in detect_fn.__code__.co_varnames
-    
-    if is_yolo_detect:
-        yolo_session = ort.InferenceSession(
-            yolo_model_path, 
-            providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
-        )
-    
-    for seq_idx, (frame_sequence, future_frame) in enumerate(frame_sequences):
-        # Process each frame in the sequence
-        all_pedestrians = []
-        
-        for frame in frame_sequence:
-            # Load and preprocess frame
-            img = load_and_preprocess_frame(
-                frame.path, 
-                target_width=target_width,
-                target_height=target_height
-            )
-            
-            # Detect pedestrians
-            if is_yolo_detect:
-                pedestrians, yolo_session = detect_pedestrians_yolo_onnx(img,
-                                                                         session=yolo_session)
-            else:
-                pedestrians = detect_fn(img)
-                
-            all_pedestrians.append(pedestrians)
-        
-        # Process future frame for ground truth
-        future_img = load_and_preprocess_frame(
-            future_frame.path,
-            target_width=target_width,
-            target_height=target_height
-        )
-        
-        # Detect pedestrians in future frame
-        if is_yolo_detect:
-            future_pedestrians, yolo_session = detect_pedestrians_yolo_onnx(future_img,
-                                                                            session=yolo_session)
-        else:
-            future_pedestrians = detect_fn(future_img)
-        
-        # Track pedestrians across frames
-        trajectories = track_pedestrians_simple(
-            frame_sequence,
-            all_pedestrians,
-            min_track_length=min_track_length
-        )
-
-        traj_seq = TrajectorySequence(
-            frames=frame_sequence,
-            pedestrians=all_pedestrians,
-            trajectories=trajectories,
-            future_pedestrians=future_pedestrians,
-            future_frame=future_frame  # Add this line
-        )
-        
-        trajectory_sequences.append(traj_seq)
-    
-    return trajectory_sequences
-    
-
 def create_target_heatmap_from_pedestrians(
     pedestrians: List[Pedestrian],
     target_height: int = 320,
@@ -867,7 +784,6 @@ def create_masks_from_pedestrians(
             acc |= bbox_to_mask(ped.bbox, height, width)[:, :, 0].astype(bool)
 
     return acc.astype(np.float32)[..., None]             # back to float32
-
 
 
 def write_debug_images(

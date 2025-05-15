@@ -1,6 +1,7 @@
 out_image/
 model_output/
 preprocessed_data/
+log_dir/
 bak/
 *.pyc
 *.log

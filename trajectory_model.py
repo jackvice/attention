@@ -646,6 +646,7 @@ def focal_loss(pred, target, alpha=0.25, gamma=2.0, eps=1e-6):
         Focal loss value
     """
     # Convert target to binary
+    """
     target_bin = jnp.where(target > 0.0, 1.0, 0.0)
     
     # Calculate focal weights
@@ -654,7 +655,12 @@ def focal_loss(pred, target, alpha=0.25, gamma=2.0, eps=1e-6):
     
     # Standard BCE loss
     bce = -(target_bin * jnp.log(pred + eps) + (1 - target_bin) * jnp.log(1 - pred + eps))
-    
+    """
+    alpha_t = jnp.where(target > 0, alpha, 1 - alpha)
+    pt      = jnp.where(target > 0, pred, 1 - pred)
+    focal_weight = alpha_t * (1 - pt)**gamma
+    bce = -(target       * jnp.log(pred + eps)
+            + (1 - target)* jnp.log1p(-pred + eps))
     # Apply focal weights
     focal = focal_weight * bce
     
@@ -675,8 +681,8 @@ def dice_loss(pred, target, smooth=1.0):
     """
     # Flatten predictions and targets
     pred_flat = pred.reshape(-1)
-    target_flat = jnp.where(target.reshape(-1) > 0.0, 1.0, 0.0)
-    
+    #target_flat = jnp.where(target.reshape(-1) > 0.0, 1.0, 0.0)
+    target_flat = target.reshape(-1)
     # Calculate intersection and union
     intersection = jnp.sum(pred_flat * target_flat)
     

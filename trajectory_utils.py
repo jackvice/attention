@@ -10,6 +10,7 @@ import time
 import hashlib, json, pickle
 import logging
 import numpy.typing as npt
+from multiprocessing import shared_memory
 from typing import NamedTuple, List, Tuple, Dict, Optional, Callable, Iterator, Any, Union
 from pathlib import Path
 from functools import partial
@@ -69,6 +70,204 @@ def _sha1(buf: bytes) -> str:
     h = hashlib.sha1()
     h.update(buf)
     return h.hexdigest()
+
+
+
+#!/usr/bin/env python3
+"""
+RL observation functions for creating fused observations and shared memory communication.
+"""
+
+
+# Type definitions
+ObservationArray = npt.NDArray[np.float32]  # [H, W, 3]
+
+
+def create_fused_observation_jax(
+    rgb: jnp.ndarray, 
+    depth: jnp.ndarray, 
+    heatmap: jnp.ndarray,
+    pedestrian_masks: jnp.ndarray,
+    target_height: int = 96,
+    target_width: int = 96
+) -> jnp.ndarray:
+    """
+    Create a 3-channel fused observation for the RL agent.
+    
+    Args:
+        rgb: RGB image [H, W, 3] with values in [0,1]
+        depth: Depth image [H, W] with normalized values in [0,1] 
+        heatmap: Attention heatmap [H, W, 1] with values in [0,1]
+        pedestrian_masks: Binary masks [H, W, 1] for pedestrian segmentation
+        target_height: Output height (default: 96)
+        target_width: Output width (default: 96)
+        
+    Returns:
+        3-channel observation [target_height, target_width, 3] where:
+            Channel 0: Grayscale image with pedestrian pixels as white
+            Channel 1: Attention heatmap
+            Channel 2: Depth map
+            
+    Raises:
+        ValueError: If input dimensions don't match or are invalid
+    """
+    # Validate input dimensions
+    if rgb.shape[:2] != heatmap.shape[:2]:
+        raise ValueError(f"RGB shape {rgb.shape[:2]} doesn't match heatmap shape {heatmap.shape[:2]}")
+    
+    if rgb.shape[:2] != pedestrian_masks.shape[:2]:
+        raise ValueError(f"RGB shape {rgb.shape[:2]} doesn't match pedestrian_masks shape {pedestrian_masks.shape[:2]}")
+    
+    if rgb.shape[:2] != depth.shape[:2]:
+        raise ValueError(f"RGB shape {rgb.shape[:2]} doesn't match depth shape {depth.shape[:2]}")
+    
+    if len(rgb.shape) != 3 or rgb.shape[2] != 3:
+        raise ValueError(f"RGB must be [H, W, 3], got {rgb.shape}")
+    
+    if len(heatmap.shape) != 3 or heatmap.shape[2] != 1:
+        raise ValueError(f"Heatmap must be [H, W, 1], got {heatmap.shape}")
+    
+    if len(pedestrian_masks.shape) != 3 or pedestrian_masks.shape[2] != 1:
+        raise ValueError(f"Pedestrian masks must be [H, W, 1], got {pedestrian_masks.shape}")
+    
+    if len(depth.shape) != 2:
+        raise ValueError(f"Depth must be [H, W], got {depth.shape}")
+    
+    # Convert RGB to grayscale using standard luminance weights
+    grayscale = 0.299 * rgb[:, :, 0] + 0.587 * rgb[:, :, 1] + 0.114 * rgb[:, :, 2]
+    
+    # Overlay pedestrian masks as pure white (1.0) on grayscale
+    pedestrian_mask_2d = pedestrian_masks[:, :, 0]  # Remove channel dimension
+    grayscale_with_pedestrians = jnp.where(
+        pedestrian_mask_2d > 0.5,  # Threshold for binary mask
+        1.0,  # Pure white for pedestrians
+        grayscale  # Original grayscale otherwise
+    )
+    
+    # Prepare channels for stacking
+    channel_0 = grayscale_with_pedestrians  # [H, W]
+    channel_1 = heatmap[:, :, 0]  # [H, W] - remove channel dimension
+    channel_2 = depth  # [H, W]
+    
+    # Stack channels to create [H, W, 3]
+    fused_observation = jnp.stack([channel_0, channel_1, channel_2], axis=2)
+    
+    # Resize to target dimensions if needed
+    if fused_observation.shape[:2] != (target_height, target_width):
+        # JAX doesn't have built-in resize, so we'll need to use a workaround
+        # Convert to numpy, resize with OpenCV, then back to JAX
+        fused_np = np.array(fused_observation)
+        resized_np = cv2.resize(fused_np, (target_width, target_height))
+        fused_observation = jnp.array(resized_np)
+    
+    # Ensure values are in [0,1] range
+    fused_observation = jnp.clip(fused_observation, 0.0, 1.0)
+    
+    return fused_observation
+
+
+def write_observation_to_shm(
+    observation: ObservationArray, 
+    shm_block: shared_memory.SharedMemory
+) -> None:
+    """
+    Write observation to shared memory with atomic validity flag.
+    
+    Memory layout:
+    - timestamp: 8 bytes (float64)
+    - valid: 4 bytes (uint32, 1=valid, 0=invalid)
+    - observation_data: H*W*3*4 bytes (float32 array)
+    
+    Args:
+        observation: Observation array [H, W, 3] with float32 values
+        shm_block: Shared memory block for writing
+        
+    Raises:
+        ValueError: If observation shape is invalid or shared memory too small
+    """
+    if len(observation.shape) != 3 or observation.shape[2] != 3:
+        raise ValueError(f"Observation must be [H, W, 3], got {observation.shape}")
+    
+    if observation.dtype != np.float32:
+        raise ValueError(f"Observation must be float32, got {observation.dtype}")
+    
+    # Calculate required memory size
+    header_size = 8 + 4  # timestamp + valid flag
+    data_size = observation.nbytes
+    total_size = header_size + data_size
+    
+    if len(shm_block.buf) < total_size:
+        raise ValueError(f"Shared memory too small: need {total_size}, got {len(shm_block.buf)}")
+    
+    # Get buffer view
+    buf = shm_block.buf
+    
+    # Set validity flag to 0 (invalid) first for atomic update
+    struct.pack_into('<L', buf, 8, 0)  # uint32 at offset 8
+    
+    # Write timestamp
+    current_time = time.time()
+    struct.pack_into('<d', buf, 0, current_time)  # float64 at offset 0
+    
+    # Write observation data
+    observation_bytes = observation.tobytes()
+    buf[header_size:header_size + data_size] = observation_bytes
+    
+    # Set validity flag to 1 (valid) - this makes the update atomic
+    struct.pack_into('<L', buf, 8, 1)  # uint32 at offset 8
+
+
+def read_observation_from_shm(
+    shm_block: shared_memory.SharedMemory,
+    target_height: int = 96,
+    target_width: int = 96,
+    max_age_seconds: float = 1.0
+) -> Optional[ObservationArray]:
+    """
+    Read observation from shared memory if valid and recent.
+    
+    Args:
+        shm_block: Shared memory block for reading
+        target_height: Expected observation height
+        target_width: Expected observation width  
+        max_age_seconds: Maximum age of observation to accept
+        
+    Returns:
+        Observation array [H, W, 3] if valid and recent, None otherwise
+        
+    Raises:
+        ValueError: If shared memory is too small for expected observation
+    """
+    # Calculate expected memory size
+    header_size = 8 + 4  # timestamp + valid flag
+    expected_data_size = target_height * target_width * 3 * 4  # float32
+    total_size = header_size + expected_data_size
+    
+    if len(shm_block.buf) < total_size:
+        raise ValueError(f"Shared memory too small: need {total_size}, got {len(shm_block.buf)}")
+    
+    # Get buffer view
+    buf = shm_block.buf
+    
+    # Read validity flag first
+    valid_flag = struct.unpack_from('<L', buf, 8)[0]  # uint32 at offset 8
+    
+    if valid_flag != 1:
+        return None  # Data is not valid
+    
+    # Read timestamp
+    timestamp = struct.unpack_from('<d', buf, 0)[0]  # float64 at offset 0
+    current_time = time.time()
+    
+    if current_time - timestamp > max_age_seconds:
+        return None  # Data is too old
+    
+    # Read observation data
+    observation_bytes = bytes(buf[header_size:header_size + expected_data_size])
+    observation = np.frombuffer(observation_bytes, dtype=np.float32)
+    observation = observation.reshape((target_height, target_width, 3))
+    
+    return observation
 
 
 def create_fused_observation(

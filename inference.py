@@ -12,11 +12,14 @@ import argparse
 from typing import List, Tuple, Optional, Dict, Any, NamedTuple
 import onnxruntime as ort
 
+import struct
 # Import existing utilities
 from trajectory_utils import (
     Pedestrian,
     detect_pedestrians_yolo_onnx,
-    create_masks_from_pedestrians
+    create_masks_from_pedestrians,
+    create_fused_observation_jax,
+    write_observation_to_shm
 )
 
 # Configuration - must match producer
@@ -159,7 +162,7 @@ def attach_blocks(
         return shm_frames, shm_meta, frames_array, timestamps, cursor
         
     except FileNotFoundError as e:
-        print(f"Error: Could not find shared memory block: {e}")
+        print(f"Error: Could not find shared memory block: {e}, SHM_IMG: {frames_name}, SHM_META: {meta_name} ")
         # Just print available segments without creating new SharedMemory objects
         try:
             import os
@@ -334,6 +337,21 @@ def process_buffer(
         timestamps=sampled_timestamps
     )
 
+def wait_for_blocks(frames_name="fifo_frames",
+                    meta_name="fifo_meta",
+                    retries=10, delay=0.2):
+    for i in range(retries):
+        try:
+            return attach_blocks(frames_name, meta_name)
+        except FileNotFoundError:
+            time.sleep(delay)
+    raise RuntimeError("Shared-memory blocks did not appear.")
+
+# …
+
+
+
+
 def main():
     """Main function for YOLO frame processor with trajectory prediction."""
     parser = argparse.ArgumentParser(description="Process frames with YOLO and predict trajectories")
@@ -351,6 +369,8 @@ def main():
                       help=f"Name of frames shared memory (default: {SHM_IMG})")
     parser.add_argument("--meta-name", type=str, default=SHM_META,
                       help=f"Name of metadata shared memory (default: {SHM_META})")
+    parser.add_argument("--rl-obs-name", type=str, default="rl_observation",
+                      help="Name of RL observation shared memory (default: rl_observation)")
     
     args = parser.parse_args()
     
@@ -359,7 +379,11 @@ def main():
     print(f"Using attention model: {args.attention_model}")
     print(f"Sampling {args.frames} frames over {args.span}s span")
     print(f"Processing interval: {args.interval}s")
-    
+    print(f"SHM_IMG: {args.frames_name}, SHM_META: {args.meta_name} ")    
+    # RL observation parameters
+    rl_obs_height, rl_obs_width = 96, 96
+    rl_obs_channels = 3
+
     try:
         # Load YOLO model
         yolo_session = ort.InferenceSession(
@@ -371,13 +395,42 @@ def main():
         # Load attention model
         predict_fn, model_info = load_attention_model(args.attention_model)
         print(f"Successfully loaded attention model with embedding_dim={model_info['config'].embedding_dim}")
-        
-        # Attach to shared memory blocks
-        shm_frames, shm_meta, frames_array, timestamps, cursor = attach_blocks(
+
+
+        shm_frames, shm_meta, frames_array, timestamps, cursor = wait_for_blocks(
             frames_name=args.frames_name,
-            meta_name=args.meta_name
-        )
+            meta_name=args.meta_name )
         print("Successfully attached to shared memory blocks")
+        # Attach to shared memory blocks
+        #shm_frames, shm_meta, frames_array, timestamps, cursor = attach_blocks(
+        #    frames_name=args.frames_name,
+        #    meta_name=args.meta_name
+        #)
+        print("Successfully attached to shared memory blocks")
+        
+        # Setup RL observation shared memory
+        from rl_observation_functions import write_observation_to_shm
+        
+        # Clean up any existing RL observation shared memory
+        try:
+            shared_memory.SharedMemory(name=args.rl_obs_name).unlink()
+            print(f"Cleaned up existing RL observation shared memory: {args.rl_obs_name}")
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            print(f"Warning: Could not clean up existing RL observation shared memory: {e}")
+        
+        # Create RL observation shared memory
+        header_size = 8 + 4  # timestamp + valid flag
+        obs_data_size = rl_obs_height * rl_obs_width * rl_obs_channels * 4  # float32
+        rl_obs_shm_size = header_size + obs_data_size
+        
+        rl_obs_shm = shared_memory.SharedMemory(
+            create=True,
+            size=rl_obs_shm_size,
+            name=args.rl_obs_name
+        )
+        print(f"Created RL observation shared memory: {args.rl_obs_name} ({rl_obs_shm_size} bytes)")
         
         # Main processing loop
         while True:
@@ -405,7 +458,44 @@ def main():
                 print(f"Prediction: max={heat_max:.3f}, mean={heat_mean:.3f}, "
                       f"coverage={heat_nonzero:.1%}, time={inference_time*1000:.1f}ms")
                 
-                # TODO: Use heatmap for subsequent components (RL agent)
+                # Create fused observation for RL agent
+                try:
+                    import jax.numpy as jnp
+                    from rl_observation_functions import create_fused_observation_jax
+                    
+                    # Get latest RGB frame and mask frame
+                    latest_rgb = jnp.array(batch.rgb_frames[-1])  # [H, W, 3]
+                    latest_mask = jnp.array(batch.mask_frames[-1])  # [H, W, 1]
+                    
+                    # Create zero depth frame (placeholder)
+                    depth_frame = jnp.zeros(latest_rgb.shape[:2], dtype=jnp.float32)  # [H, W]
+                    
+                    # Convert heatmap to JAX array
+                    heatmap_jax = jnp.array(heatmap)  # [H, W, 1]
+                    
+                    # Create fused observation
+                    fused_obs = create_fused_observation_jax(
+                        rgb=latest_rgb,
+                        depth=depth_frame,
+                        heatmap=heatmap_jax,
+                        pedestrian_masks=latest_mask,
+                        target_height=rl_obs_height,
+                        target_width=rl_obs_width
+                    )
+                    
+                    # Convert to numpy for shared memory
+                    fused_obs_np = np.array(fused_obs).astype(np.float32)
+                    
+                    # Write to shared memory
+                    write_observation_to_shm(fused_obs_np, rl_obs_shm)
+                    
+                    print(f"Created and wrote RL observation {fused_obs_np.shape} to shared memory")
+                    
+                except Exception as e:
+                    print(f"Error creating RL observation: {e}")
+                    import traceback
+                    traceback.print_exc()
+                
             else:
                 print("Not enough frames available yet")
             
@@ -426,6 +516,13 @@ def main():
             shm_frames.close()
             shm_meta.close()
             print("Closed shared memory blocks")
+        except:
+            pass
+        
+        try:
+            rl_obs_shm.close()
+            rl_obs_shm.unlink()
+            print("Closed and unlinked RL observation shared memory")
         except:
             pass
 

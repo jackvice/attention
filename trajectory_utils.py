@@ -39,8 +39,7 @@ class Pedestrian(NamedTuple):
     mask: Optional[np.ndarray]  # Binary mask if available
     confidence: float
 
-
-
+    
 class TrajectorySequence(NamedTuple):
     frames: List[Frame]
     pedestrians: List[List[Pedestrian]]

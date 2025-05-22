@@ -33,6 +33,82 @@ SHM_META = "fifo_meta"
 DEFAULT_YOLO_PATH = "/home/jack/src/attention/models/yolo11n.onnx"
 
 
+def load_attention_model(
+    checkpoint_path: str,
+) -> Tuple[Callable, Dict[str, Any]]:
+    """
+    Load the attention model from a checkpoint file.
+    
+    Args:
+        checkpoint_path: Path to the model checkpoint file
+        
+    Returns:
+        Tuple of (prediction_function, model_state)
+    """
+    import pickle
+    import jax
+    import flax.linen as nn
+    from trajectory_model import SpatiotemporalAttention, ModelConfig
+    
+    # Load checkpoint file
+    print(f"Loading attention model from {checkpoint_path}")
+    with open(checkpoint_path, 'rb') as f:
+        checkpoint = pickle.load(f)
+    
+    # Extract model parameters and config
+    params = checkpoint['params']
+    config_dict = checkpoint.get('config', {})
+    
+    # Create model config
+    if isinstance(config_dict, dict):
+        config = ModelConfig(**config_dict)
+    else:
+        # Assume it's already a ModelConfig object
+        config = config_dict
+    
+    # Create model instance
+    model = SpatiotemporalAttention(config=config)
+    
+    # Create optimized prediction function
+    @jax.jit
+    def predict_fn(rgb_frames, mask_frames):
+        # Add batch dimension if not present
+        if rgb_frames.ndim == 4:
+            rgb_frames = rgb_frames[None, ...]  # [1, T, H, W, 3]
+        if mask_frames.ndim == 4:
+            mask_frames = mask_frames[None, ...]  # [1, T, H, W, 1]
+            
+        # Run model in inference mode
+        return model.apply({'params': params}, rgb_frames, mask_frames, training=False)
+    
+    return predict_fn, {'model': model, 'params': params, 'config': config}
+
+def process_with_attention(
+    batch: ProcessedBatch,
+    predict_fn: Callable
+) -> np.ndarray:
+    """
+    Process a batch with the attention model to predict trajectories.
+    
+    Args:
+        batch: ProcessedBatch containing RGB and mask frames
+        predict_fn: Jitted prediction function from loaded model
+        
+    Returns:
+        Predicted trajectory heatmap [H, W, 1]
+    """
+    import jax.numpy as jnp
+    
+    # Convert to JAX arrays
+    rgb_frames = jnp.array(batch.rgb_frames)
+    mask_frames = jnp.array(batch.mask_frames)
+    
+    # Run prediction
+    predictions = predict_fn(rgb_frames, mask_frames)
+    
+    # Convert back to numpy (remove batch dimension)
+    return np.array(predictions[0])
+
 class ProcessedBatch(NamedTuple):
     """Processed frames with detections, ready for trajectory prediction."""
     rgb_frames: np.ndarray  # [T, H, W, 3]
@@ -141,7 +217,6 @@ def sample_frames_evenly(
     sampled_frames = frames[selected_indices].astype(np.float32) / 255.0  # (K, H, W, 3)
     sampled_timestamps = stamps[selected_indices]
     
-    # For debugging
     newest_time = stamps[indices[0]]
     oldest_time = stamps[indices[sel[-1]]]
     print(f"Retrieved {num_frames} frames spanning {newest_time - oldest_time:.2f}s")
@@ -258,12 +333,13 @@ def process_buffer(
         timestamps=sampled_timestamps
     )
 
-
 def main():
-    """Main function for YOLO frame processor."""
-    parser = argparse.ArgumentParser(description="Process frames with YOLO for trajectory prediction")
+    """Main function for YOLO frame processor with trajectory prediction."""
+    parser = argparse.ArgumentParser(description="Process frames with YOLO and predict trajectories")
     parser.add_argument("--yolo_model", type=str, default=DEFAULT_YOLO_PATH, 
                       help=f"Path to YOLO ONNX model (default: {DEFAULT_YOLO_PATH})")
+    parser.add_argument("--attention_model", type=str, required=True,
+                      help="Path to attention model checkpoint file")
     parser.add_argument("--frames", type=int, default=5,
                       help="Number of frames to sample (default: 5)")
     parser.add_argument("--span", type=float, default=2.0,
@@ -277,8 +353,9 @@ def main():
     
     args = parser.parse_args()
     
-    print(f"YOLO frame processor starting...")
+    print(f"Trajectory prediction pipeline starting...")
     print(f"Using YOLO model: {args.yolo_model}")
+    print(f"Using attention model: {args.attention_model}")
     print(f"Sampling {args.frames} frames over {args.span}s span")
     print(f"Processing interval: {args.interval}s")
     
@@ -289,6 +366,10 @@ def main():
             providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
         )
         print("Successfully loaded YOLO model")
+        
+        # Load attention model
+        predict_fn, model_info = load_attention_model(args.attention_model)
+        print(f"Successfully loaded attention model with embedding_dim={model_info['config'].embedding_dim}")
         
         # Attach to shared memory blocks
         shm_frames, shm_meta, frames_array, timestamps, cursor = attach_blocks(
@@ -310,17 +391,20 @@ def main():
             )
             
             if batch is not None:
-                # Here you would pass batch to the attention model
-                # For now, just print some statistics
-                rgb_mean = np.mean(batch.rgb_frames)
-                mask_mean = np.mean(batch.mask_frames)
-                print(f"Processed batch: RGB mean={rgb_mean:.4f}, Mask mean={mask_mean:.4f}")
+                # Process with attention model
+                start_time = time.time()
+                heatmap = process_with_attention(batch, predict_fn)
+                inference_time = time.time() - start_time
                 
-                # Number of pedestrians detected (non-zero mask pixels)
-                num_pedestrians = np.sum(batch.mask_frames > 0.5)
-                print(f"Detected {num_pedestrians} pedestrian pixels in masks")
+                # Calculate some statistics for debugging
+                heat_max = np.max(heatmap)
+                heat_mean = np.mean(heatmap)
+                heat_nonzero = np.mean(heatmap > 0.1)
                 
-                # TODO: Pass to attention model for trajectory prediction
+                print(f"Prediction: max={heat_max:.3f}, mean={heat_mean:.3f}, "
+                      f"coverage={heat_nonzero:.1%}, time={inference_time*1000:.1f}ms")
+                
+                # TODO: Use heatmap for subsequent components (RL agent)
             else:
                 print("Not enough frames available yet")
             

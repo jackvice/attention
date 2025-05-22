@@ -1,3 +1,8 @@
+
+
+python inference.py --attention_mode ./model_output/checkpoint_epoch_1501.pk
+~/src/attention/yolo/inference/ros2_mem_share.py 
+
 fixes!!:
 loading depth and yolo from disk at each inference needs to be fixed to load once.
 change numpy to jax.numpy

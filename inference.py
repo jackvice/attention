@@ -127,6 +127,54 @@ def attach_blocks(
     """
     Attach to shared memory blocks and create numpy views.
     Keep these open for the lifetime of the program.
+
+    Args:
+        frames_name: Name of frames shared memory block
+        meta_name: Name of metadata shared memory block
+
+    Returns:
+        Tuple of (frames_shm, meta_shm, frames_array, timestamps_array, cursor_array)
+    """
+    try:
+        # Prevent Python's resource_tracker from unlinking on crash
+        shm_frames = shared_memory.SharedMemory(name=frames_name, track=False)
+        shm_meta   = shared_memory.SharedMemory(name=meta_name,   track=False)
+
+        frames_array = np.ndarray(
+            (CAPACITY, H, W, 3), dtype=np.uint8, buffer=shm_frames.buf
+        )
+
+        timestamps = np.ndarray(
+            (CAPACITY,), dtype=np.float64, buffer=shm_meta.buf[:CAPACITY * 8]
+        )
+
+        cursor = np.ndarray(
+            (1,), dtype=np.uint32, buffer=shm_meta.buf[CAPACITY * 8:]
+        )
+
+        return shm_frames, shm_meta, frames_array, timestamps, cursor
+
+    except FileNotFoundError as e:
+        print(f"Error: Could not find shared memory block: {e}, SHM_IMG: {frames_name}, SHM_META: {meta_name}")
+        try:
+            import os
+            if os.path.exists("/dev/shm"):
+                print("Available shared memory segments:")
+                for f in os.listdir("/dev/shm"):
+                    print(f"  - {f}")
+        except:
+            pass
+        raise
+
+
+
+def old_attach_blocks(
+    frames_name: str = SHM_IMG,
+    meta_name: str = SHM_META
+) -> Tuple[shared_memory.SharedMemory, shared_memory.SharedMemory, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Attach to shared memory blocks and create numpy views.
+    Keep these open for the lifetime of the program.
     
     Args:
         frames_name: Name of frames shared memory block
@@ -339,16 +387,18 @@ def process_buffer(
 
 def wait_for_blocks(frames_name="fifo_frames",
                     meta_name="fifo_meta",
-                    retries=10, delay=0.2):
-    for i in range(retries):
+                    timeout=5.0,  # total seconds to wait
+                    delay=0.1):   # seconds between tries
+    import time, os
+    t0 = time.time()
+    while True:
         try:
             return attach_blocks(frames_name, meta_name)
         except FileNotFoundError:
+            if time.time() - t0 > timeout:
+                raise RuntimeError(
+                    f"Timed out after {timeout}s – segments never appeared")
             time.sleep(delay)
-    raise RuntimeError("Shared-memory blocks did not appear.")
-
-# …
-
 
 
 
@@ -409,7 +459,8 @@ def main():
         print("Successfully attached to shared memory blocks")
         
         # Setup RL observation shared memory
-        from rl_observation_functions import write_observation_to_shm
+        #from rl_observation_functions import write_observation_to_shm
+        from trajectory_utils import write_observation_to_shm
         
         # Clean up any existing RL observation shared memory
         try:
@@ -461,7 +512,7 @@ def main():
                 # Create fused observation for RL agent
                 try:
                     import jax.numpy as jnp
-                    from rl_observation_functions import create_fused_observation_jax
+                    #from rl_observation_functions import create_fused_observation_jax
                     
                     # Get latest RGB frame and mask frame
                     latest_rgb = jnp.array(batch.rgb_frames[-1])  # [H, W, 3]
@@ -504,8 +555,8 @@ def main():
     
     except KeyboardInterrupt:
         print("Processor stopped by user")
-    except FileNotFoundError:
-        print("Could not attach to shared memory - is the producer running?")
+    #except FileNotFoundError:
+    #    print("Could not attach to shared memory - is the producer running?")
     except Exception as e:
         print(f"Error: {str(e)}")
         import traceback

@@ -1,7 +1,17 @@
+ros2 launch roverrobotics_gazebo 4wd_rover_gazebo.launch.py
 
+~/src/RoboTerrain/ros2_ws/src$ python ign_ros2_pose_topic.py inspect rover_zero4wd
 
-python inference.py --attention_mode ./model_output/checkpoint_epoch_1501.pk
+~/src/attention/yolo/inference$ python ros2_mem_share.py 
+
+~/src/RoboTerrain/ros2_ws/src/dynamic_obstacles$ python spawn.py 
+
+python inference.py --attention_mode ./model_output/checkpoint_epoch_1501.pkl
 ~/src/attention/yolo/inference/ros2_mem_share.py 
+
+
+(sb3) jack@HAL:~/src/RoboTerrain/ros2_ws/src/sb3$ python sb3_SAC_fused.py --mode train --load False --world inspect
+
 
 fixes!!:
 loading depth and yolo from disk at each inference needs to be fixed to load once.

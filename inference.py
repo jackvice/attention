@@ -168,62 +168,6 @@ def attach_blocks(
 
 
 
-def old_attach_blocks(
-    frames_name: str = SHM_IMG,
-    meta_name: str = SHM_META
-) -> Tuple[shared_memory.SharedMemory, shared_memory.SharedMemory, np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Attach to shared memory blocks and create numpy views.
-    Keep these open for the lifetime of the program.
-    
-    Args:
-        frames_name: Name of frames shared memory block
-        meta_name: Name of metadata shared memory block
-        
-    Returns:
-        Tuple of (frames_shm, meta_shm, frames_array, timestamps_array, cursor_array)
-    """
-    try:
-        # Connect to shared memory blocks - will raise FileNotFoundError if not found
-        shm_frames = shared_memory.SharedMemory(name=frames_name)
-        shm_meta = shared_memory.SharedMemory(name=meta_name)
-        
-        # Create views into shared memory
-        frames_array = np.ndarray(
-            (CAPACITY, H, W, 3),
-            dtype=np.uint8,
-            buffer=shm_frames.buf
-        )
-        
-        meta_buf = shm_meta.buf
-        timestamps = np.ndarray(
-            (CAPACITY,),
-            dtype=np.float64,
-            buffer=meta_buf[:CAPACITY * 8]
-        )
-        cursor = np.ndarray(
-            (1,),
-            dtype=np.uint32, 
-            buffer=meta_buf[CAPACITY * 8:]
-        )
-        
-        return shm_frames, shm_meta, frames_array, timestamps, cursor
-        
-    except FileNotFoundError as e:
-        print(f"Error: Could not find shared memory block: {e}, SHM_IMG: {frames_name}, SHM_META: {meta_name} ")
-        # Just print available segments without creating new SharedMemory objects
-        try:
-            import os
-            if os.path.exists("/dev/shm"):
-                print("Available shared memory segments:")
-                for f in os.listdir("/dev/shm"):
-                    if not f.startswith('psm_'):
-                        continue
-                    print(f"  - {f[4:]}")  # Strip 'psm_' prefix
-        except:
-            pass
-        raise
-
 
 def sample_frames_evenly(
     frames: np.ndarray,
@@ -485,6 +429,7 @@ def main():
         
         # Main processing loop
         while True:
+            loop_start_time = time.time()
             # Process buffer and get batch for attention model
             batch = process_buffer(
                 yolo_session=yolo_session,
@@ -540,8 +485,11 @@ def main():
                     # Write to shared memory
                     write_observation_to_shm(fused_obs_np, rl_obs_shm)
                     
-                    print(f"Created and wrote RL observation {fused_obs_np.shape} to shared memory")
-                    
+                    #print(f"Created and wrote RL observation {fused_obs_np.shape} to shared memory")
+                    loop_end_time = time.time()
+                    total_loop_time = loop_end_time - loop_start_time
+                    print(f"Complete loop cycle: {total_loop_time*1000:.1f}ms at {time.time():.3f}")
+        
                 except Exception as e:
                     print(f"Error creating RL observation: {e}")
                     import traceback
@@ -551,7 +499,9 @@ def main():
                 print("Not enough frames available yet")
             
             # Wait before next processing
-            time.sleep(args.interval)
+            last_cursor_pos = cursor[0]
+            while cursor[0] == last_cursor_pos:
+                time.sleep(0.001)  # 1ms polling
     
     except KeyboardInterrupt:
         print("Processor stopped by user")

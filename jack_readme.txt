@@ -10,7 +10,7 @@ python inference.py --attention_mode ./model_output/checkpoint_epoch_1501.pkl
 ~/src/attention/yolo/inference/ros2_mem_share.py 
 
 
-(sb3) jack@HAL:~/src/RoboTerrain/ros2_ws/src/sb3$ python sb3_SAC_fused.py --mode train --load False --world inspect
+(sb3) jack@HAL:~/src/RoboTerrain/ros2_ws/src/sb3$ python sb3_SAC_fused.py --mode train --load False --world inspect --vision True
 
 
 fixes!!:

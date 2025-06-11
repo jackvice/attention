@@ -20,7 +20,9 @@ change numpy to jax.numpy
 camera test
 ros2 launch roverrobotics_gazebo 4wd_rover_gazebo.launch.py
 
-python run_efficient_training.py --dataset_path /home/jack/data/social_nav/subway --num_epochs 1000 --batch_size 4 --sequence_length 5 --target_width 320 --target_height 320 --yolo_model_path ../models/yolo11n.onnx --embedding_dim 128 --num_heads 4
+python run_efficient_training.py --dataset_path /home/jack/data/social_nav --num_epochs 1000 --batch_size 4 --sequence_length 5 --target_width 320 --target_height 320 --yolo_model_path ../models/yolo11n.onnx --embedding_dim 128 --num_heads 4
+
+python run_efficient_training.py --dataset_path /home/jack/data/social_nav --num_epochs 1000 --batch_size 4 --sequence_length 5 --target_width 320 --target_height 320 --yolo_model_path ../models/yolo11n.onnx --embedding_dim 128 --num_heads 4 --resume_checkpoint ./model_output/checkpoint_epoch_1501.pkl
 
 
 python cleanup_shm.py --all --force

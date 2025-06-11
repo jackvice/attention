@@ -95,6 +95,86 @@ class ProcessedBatch(NamedTuple):
 
 def process_with_attention(
     batch: ProcessedBatch,
+    all_pedestrians: List[List[Pedestrian]],
+    predict_fn: callable
+) -> np.ndarray:
+    """
+    Process batch with attention model - only predict if last frame has pedestrians.
+    
+    Args:
+        batch: ProcessedBatch containing RGB and mask frames
+        all_pedestrians: Pedestrian detections for each frame in sequence
+        predict_fn: Jitted prediction function from loaded model
+        
+    Returns:
+        Predicted trajectory heatmap [H, W, 1] or zeros if no person in last frame
+    """
+    import jax.numpy as jnp
+    
+    # Check if last frame has pedestrians
+    if not all_pedestrians or len(all_pedestrians[-1]) == 0:
+        # Return empty heatmap with same shape as expected output
+        h, w = batch.rgb_frames.shape[1:3]  # Get spatial dimensions
+        return np.zeros((h, w, 1), dtype=np.float32)
+    
+    # Convert to JAX arrays and run prediction
+    rgb_frames = jnp.array(batch.rgb_frames)
+    mask_frames = jnp.array(batch.mask_frames)
+    predictions = predict_fn(rgb_frames, mask_frames)
+    
+    return np.array(predictions[0])
+
+
+def process_buffer(
+    yolo_session: ort.InferenceSession,
+    frames: np.ndarray,
+    timestamps: np.ndarray,
+    cursor: np.ndarray,
+    num_frames: int = 5,
+    span: float = 2.0
+) -> Tuple[Optional[ProcessedBatch], List[List[Pedestrian]]]:
+    """
+    Process buffer - UPDATED to return pedestrian data for detection gating.
+    
+    Returns:
+        Tuple of (ProcessedBatch, all_pedestrians_list) or (None, [])
+    """
+    # Sample frames evenly across the buffer
+    sampled_frames, sampled_timestamps = sample_frames_evenly(
+        frames=frames,
+        stamps=timestamps,
+        cursor=cursor,
+        num_frames=num_frames,
+        span=span
+    )
+    
+    if sampled_frames is None:
+        return None, []
+    
+    # Detect pedestrians in each frame
+    rgb_frames, all_pedestrians = process_frames_with_yolo(
+        frames=sampled_frames,
+        yolo_session=yolo_session
+    )
+    
+    # Create binary mask frames (now with center boxes)
+    mask_frames = create_mask_frames(
+        frames=rgb_frames,
+        pedestrians_list=all_pedestrians
+    )
+    
+    batch = ProcessedBatch(
+        rgb_frames=rgb_frames,
+        mask_frames=mask_frames,
+        timestamps=sampled_timestamps
+    )
+    
+    return batch, all_pedestrians
+
+
+    
+def old_process_with_attention(
+    batch: ProcessedBatch,
     predict_fn: callable
 ) -> np.ndarray:
     """
@@ -276,7 +356,7 @@ def create_mask_frames(
     return mask_frames
 
 
-def process_buffer(
+def Old_process_buffer(
     yolo_session: ort.InferenceSession,
     frames: np.ndarray,
     timestamps: np.ndarray,
@@ -431,6 +511,7 @@ def main():
         while True:
             loop_start_time = time.time()
             # Process buffer and get batch for attention model
+            """
             batch = process_buffer(
                 yolo_session=yolo_session,
                 frames=frames_array,
@@ -444,6 +525,21 @@ def main():
                 # Process with attention model
                 start_time = time.time()
                 heatmap = process_with_attention(batch, predict_fn)
+            """
+            batch, all_pedestrians = process_buffer(
+                yolo_session=yolo_session,
+                frames=frames_array,
+                timestamps=timestamps,
+                cursor=cursor,
+                num_frames=args.frames,
+                span=args.span
+            )
+            
+            if batch is not None:
+                # Process with attention model (now with detection gating)
+                start_time = time.time()
+                heatmap = process_with_attention(batch, all_pedestrians, predict_fn)
+           
                 inference_time = time.time() - start_time
                 
                 # Calculate some statistics for debugging

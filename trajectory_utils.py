@@ -972,6 +972,46 @@ def create_masks_from_pedestrians(
     height: int,
     width: int
 ) -> np.ndarray:
+    """Create center box masks for pedestrians (UPDATED)."""
+    combined_mask = np.zeros((height, width), dtype=np.float32)
+    
+    for pedestrian in pedestrians:
+        # Calculate box size from bbox height
+        bbox_height = pedestrian.bbox[3] - pedestrian.bbox[1]  # y2 - y1
+        box_size = calculate_box_size_from_height(bbox_height)
+        
+        # Get center position
+        center_x, center_y = pedestrian.position.astype(int)
+        
+        # Calculate box bounds
+        half_size = box_size // 2
+        x1 = max(0, center_x - half_size)
+        x2 = min(width, center_x + half_size)
+        y1 = max(0, center_y - half_size)
+        y2 = min(height, center_y + half_size)
+        
+        # Fill box with white (1.0)
+        combined_mask[y1:y2, x1:x2] = 1.0
+    
+    return combined_mask[..., np.newaxis]  # Add channel dimension
+
+
+def calculate_box_size_from_height(bbox_height: int) -> int:
+    """Map bbox height to center box size (ADD THIS FUNCTION to trajectory_utils.py)."""
+    min_size, max_size = 4, 16
+    min_height, max_height = 20, 100
+    
+    clamped_height = max(min_height, min(bbox_height, max_height))
+    size = min_size + (max_size - min_size) * (clamped_height - min_height) / (max_height - min_height)
+    return int(size)
+
+
+
+def old_create_masks_from_pedestrians(
+    pedestrians: List[Pedestrian],
+    height: int,
+    width: int
+) -> np.ndarray:
     """Return H×W×1 binary mask (float32) for all pedestrians."""
     acc = np.zeros((height, width), dtype=bool)          # <- bool buffer
 

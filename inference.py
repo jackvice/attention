@@ -19,7 +19,9 @@ from trajectory_utils import (
     detect_pedestrians_yolo_onnx,
     create_masks_from_pedestrians,
     create_fused_observation_jax,
-    write_observation_to_shm
+    write_observation_to_shm,
+    estimate_depth_pytorch,
+    save_debug_observation
 )
 
 # Configuration - must match producer
@@ -172,34 +174,6 @@ def process_buffer(
     return batch, all_pedestrians
 
 
-    
-def old_process_with_attention(
-    batch: ProcessedBatch,
-    predict_fn: callable
-) -> np.ndarray:
-    """
-    Process a batch with the attention model to predict trajectories.
-    
-    Args:
-        batch: ProcessedBatch containing RGB and mask frames
-        predict_fn: Jitted prediction function from loaded model
-        
-    Returns:
-        Predicted trajectory heatmap [H, W, 1]
-    """
-    import jax.numpy as jnp
-    
-    # Convert to JAX arrays
-    rgb_frames = jnp.array(batch.rgb_frames)
-    mask_frames = jnp.array(batch.mask_frames)
-    
-    # Run prediction
-    predictions = predict_fn(rgb_frames, mask_frames)
-    
-    # Convert back to numpy (remove batch dimension)
-    return np.array(predictions[0])
-
-
 def attach_blocks(
     frames_name: str = SHM_IMG,
     meta_name: str = SHM_META
@@ -245,8 +219,6 @@ def attach_blocks(
         except:
             pass
         raise
-
-
 
 
 def sample_frames_evenly(
@@ -295,7 +267,7 @@ def sample_frames_evenly(
     
     newest_time = stamps[indices[0]]
     oldest_time = stamps[indices[sel[-1]]]
-    print(f"Retrieved {num_frames} frames spanning {newest_time - oldest_time:.2f}s")
+    #print(f"Retrieved {num_frames} frames spanning {newest_time - oldest_time:.2f}s")
     
     return sampled_frames, sampled_timestamps
 
@@ -355,59 +327,6 @@ def create_mask_frames(
     
     return mask_frames
 
-
-def Old_process_buffer(
-    yolo_session: ort.InferenceSession,
-    frames: np.ndarray,
-    timestamps: np.ndarray,
-    cursor: np.ndarray,
-    num_frames: int = 5,
-    span: float = 2.0
-) -> Optional[ProcessedBatch]:
-    """
-    Process the frame buffer to produce input for the attention model.
-    
-    Args:
-        yolo_session: ONNX session for YOLO model
-        frames: Numpy array of all frames (from shared memory)
-        timestamps: Numpy array of timestamps (from shared memory)
-        cursor: Numpy array with current write position (from shared memory)
-        num_frames: Number of frames to sample
-        span: Time span to sample from (seconds)
-        
-    Returns:
-        ProcessedBatch object with RGB frames, mask frames, and timestamps,
-        or None if not enough frames are available
-    """
-    # Sample frames evenly across the buffer
-    sampled_frames, sampled_timestamps = sample_frames_evenly(
-        frames=frames,
-        stamps=timestamps,
-        cursor=cursor,
-        num_frames=num_frames,
-        span=span
-    )
-    
-    if sampled_frames is None:
-        return None
-    
-    # Detect pedestrians in each frame
-    rgb_frames, all_pedestrians = process_frames_with_yolo(
-        frames=sampled_frames,
-        yolo_session=yolo_session
-    )
-    
-    # Create binary mask frames
-    mask_frames = create_mask_frames(
-        frames=rgb_frames,
-        pedestrians_list=all_pedestrians
-    )
-    
-    return ProcessedBatch(
-        rgb_frames=rgb_frames,
-        mask_frames=mask_frames,
-        timestamps=sampled_timestamps
-    )
 
 def wait_for_blocks(frames_name="fifo_frames",
                     meta_name="fifo_meta",
@@ -508,8 +427,13 @@ def main():
         print(f"Created RL observation shared memory: {args.rl_obs_name} ({rl_obs_shm_size} bytes)")
         
         # Main processing loop
+        depth_session = None
+        
+        loop_idx = 0        
         while True:
+            loop_idx += 1
             loop_start_time = time.time()
+            
             # Process buffer and get batch for attention model
             """
             batch = process_buffer(
@@ -547,9 +471,6 @@ def main():
                 heat_mean = np.mean(heatmap)
                 heat_nonzero = np.mean(heatmap > 0.1)
                 
-                print(f"Prediction: max={heat_max:.3f}, mean={heat_mean:.3f}, "
-                      f"coverage={heat_nonzero:.1%}, time={inference_time*1000:.1f}ms")
-                
                 # Create fused observation for RL agent
                 try:
                     import jax.numpy as jnp
@@ -560,15 +481,21 @@ def main():
                     latest_mask = jnp.array(batch.mask_frames[-1])  # [H, W, 1]
                     
                     # Create zero depth frame (placeholder)
-                    depth_frame = jnp.zeros(latest_rgb.shape[:2], dtype=jnp.float32)  # [H, W]
-                    
+                    #depth_frame = jnp.zeros(latest_rgb.shape[:2], dtype=jnp.float32)  # [H, W]
+                    latest_frame_idx = (cursor[0] - 1) & (CAPACITY - 1)
+                    latest_rgb = frames_array[latest_frame_idx].astype(np.float32) / 255.0
+                    # Get depth for latest frame
+                    depth_image, depth_session = estimate_depth_pytorch(
+                        latest_rgb, 
+                        session=depth_session
+                    )
                     # Convert heatmap to JAX array
                     heatmap_jax = jnp.array(heatmap)  # [H, W, 1]
                     
                     # Create fused observation
                     fused_obs = create_fused_observation_jax(
                         rgb=latest_rgb,
-                        depth=depth_frame,
+                        depth=jnp.array(depth_image), #depth_frame,
                         heatmap=heatmap_jax,
                         pedestrian_masks=latest_mask,
                         target_height=rl_obs_height,
@@ -584,7 +511,14 @@ def main():
                     #print(f"Created and wrote RL observation {fused_obs_np.shape} to shared memory")
                     loop_end_time = time.time()
                     total_loop_time = loop_end_time - loop_start_time
-                    print(f"Complete loop cycle: {total_loop_time*1000:.1f}ms at {time.time():.3f}")
+                    if loop_idx % 100000 == 0:
+                        save_debug_observation( loop_idx, fused_obs, './debug_png' )
+                        print(f"Complete loop cycle: {total_loop_time*1000:.1f}ms at {time.time():.3f}")
+                        print(f"Prediction: max={heat_max:.3f}, mean={heat_mean:.3f}, "
+                              f"coverage={heat_nonzero:.1%}, time={inference_time*1000:.1f}ms")
+                
+
+                    
         
                 except Exception as e:
                     print(f"Error creating RL observation: {e}")

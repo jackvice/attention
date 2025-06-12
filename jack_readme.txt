@@ -2,7 +2,7 @@ ros2 launch roverrobotics_gazebo 4wd_rover_gazebo.launch.py
 
 ~/src/RoboTerrain/ros2_ws/src$ python ign_ros2_pose_topic.py inspect rover_zero4wd
 
-~/src/attention/yolo/inference$ python ros2_mem_share.py 
+~/src/attention/inference$ python ros2_mem_share.py 
 
 ~/src/RoboTerrain/ros2_ws/src/dynamic_obstacles$ python spawn.py 
 

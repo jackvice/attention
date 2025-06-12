@@ -100,9 +100,9 @@ def save_debug_observation(
     mask_img = (channel_1 * 255).astype(np.uint8)
     
     # Save files
-    cv2.imwrite(os.path.join(out_dir, f"rgb_{loop_idx}.png"), rgb_img)
-    cv2.imwrite(os.path.join(out_dir, f"depth_{loop_idx}.png"), depth_img)
-    cv2.imwrite(os.path.join(out_dir, f"mask_{loop_idx}.png"), mask_img)
+    cv2.imwrite(os.path.join(out_dir, f"img_{loop_idx}_rgb.png"), rgb_img)
+    cv2.imwrite(os.path.join(out_dir, f"img_{loop_idx}_depth.png"), depth_img)
+    cv2.imwrite(os.path.join(out_dir, f"img_{loop_idx}_heat_map.png"), mask_img)
 
 
 def estimate_depth_pytorch(

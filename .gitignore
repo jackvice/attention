@@ -1,3 +1,6 @@
+test_ouput/
+models/
+debug_png/
 checkpoints/
 out_image/
 depth_anything_v2/

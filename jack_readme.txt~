@@ -10,25 +10,12 @@ python inference.py --attention_mode ./checkpoints/checkpoint_epoch_
 
 
 
-
-
 (sb3) jack@HAL:~/src/RoboTerrain/ros2_ws/src/sb3$ python sb3_SAC.py --mode train --load False --world inspect --vision True
 
 
-######################    fixes!!:
--change publisher to match frame rate of sim not wall clock time.
--negative reward for pointing toward human or prediction
--make blob for human proportional to the bounding box size
--continuing training of attention mechanism
--test LeSTA
-
-
-
-
-
-
-
-
+fixes!!:
+loading depth and yolo from disk at each inference needs to be fixed to load once.
+change numpy to jax.numpy
 
 camera test
 ros2 launch roverrobotics_gazebo 4wd_rover_gazebo.launch.py

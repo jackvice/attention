@@ -581,8 +581,7 @@ def train_model(
             logger.info(f"Validation Loss: {val_loss:.4f}, Validation RMSE: {val_rmse:.4f}")
         
         # Save checkpoint
-        if (
-                save_checkpoint_dir is not None) and (epoch % 10 == 0):
+        if ( save_checkpoint_dir is not None) and ((epoch+1) % 10 == 0):
             os.makedirs(save_checkpoint_dir, exist_ok=True)
             
             checkpoint = {
@@ -715,7 +714,7 @@ def combined_loss(pred, target, focal_weight=1.0, dice_weight=1.0):
 def train_trajectory_model_efficient(
     preprocessed_train_path: str,
     preprocessed_val_path: str,
-    output_dir: str = "./model_output",
+    output_dir: str = "./checkpoints",
     num_epochs: int = 3,
     steps_per_epoch: Optional[int] = None,
     batch_size: int = 8,

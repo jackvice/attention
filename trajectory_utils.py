@@ -646,7 +646,10 @@ def extract_frame_info(file_path: str) -> Optional[Frame]:
         
         # Extract sequence_id from directory structure
         # Try to find identifiable sequence markers (outdoor_1, cafe_1, etc.)
-        sequence_markers = ["outdoor", "cafe", "courtyard", "crossroad", "three_way", "subway"]
+        sequence_markers = [
+            "alley", "outdoor", "cafe", "courtyard", "crossroad", "three_way", "subway",
+            "gazebo_001", "gazebo_002", "gazebo_003", "sequence"
+        ]
         sequence_id = "unknown"
         
         for part in parts:

@@ -51,6 +51,7 @@ def load_attention_model(
         Tuple of (prediction_function, model_state)
     """
     import pickle
+    os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
     import jax
     import flax.linen as nn
     from trajectory_model import SpatiotemporalAttention, ModelConfig
@@ -511,13 +512,13 @@ def main():
                     #print(f"Created and wrote RL observation {fused_obs_np.shape} to shared memory")
                     loop_end_time = time.time()
                     total_loop_time = loop_end_time - loop_start_time
-                    if loop_idx % 100000 == 0:
+                    
+                    if loop_idx % 1000 == 0:
                         save_debug_observation( loop_idx, fused_obs, './debug_png' )
                         print(f"Complete loop cycle: {total_loop_time*1000:.1f}ms at {time.time():.3f}")
                         print(f"Prediction: max={heat_max:.3f}, mean={heat_mean:.3f}, "
                               f"coverage={heat_nonzero:.1%}, time={inference_time*1000:.1f}ms")
                 
-
                     
         
                 except Exception as e:

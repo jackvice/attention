@@ -8,6 +8,12 @@ model_output/
 preprocessed_data/
 log_dir/
 bak/
+*.pth
+*.pkl
+*.onnx
+*.pt
+*.engine
+*.png
 *.pyc
 *.log
 *.py~

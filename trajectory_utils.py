@@ -608,9 +608,38 @@ def visualize_and_save_detections(
     cv2.imwrite(output_path, cv2.cvtColor(vis_img, cv2.COLOR_RGB2BGR))
     print(f"Saved visualization to {output_path}")
 
+
+
+def extract_frame_info(file_path: str) -> Optional[Frame]:
+    try:
+        p        = Path(file_path)
+        frame_id = int(p.stem)                    # 0.png → 0
+        parts    = p.parts
+
+        # --- where is cam_img? ---
+        cam_idx   = parts.index("cam_img")        # …/cam_img/<cam-id>/data_rgb/…
+
+        camera_id = parts[cam_idx + 1]            # the “1”, “2”, … directory
+
+        # ***NEW, simpler rule: everything *before* cam_img is the sequence id***
+        #    e.g.  gazebo_001/sequence_015   or   courtyard/courtyard_3
+        sequence_id = "/".join(parts[:cam_idx])
+
+        return Frame(
+            path=file_path,
+            frame_id=frame_id,
+            sequence_id=sequence_id,
+            camera_id=camera_id,
+        )
+
+    except (ValueError, IndexError):              # bad frame-number or no cam_img
+        logger.warning("Bad file %s", file_path)
+        return None
+
+    
     
 # Dataset utilities
-def extract_frame_info(file_path: str) -> Optional[Frame]:
+def extract_frame_info_Old(file_path: str) -> Optional[Frame]:
     """
     Extract frame information from file path.
     

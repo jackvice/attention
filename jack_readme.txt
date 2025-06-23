@@ -10,7 +10,7 @@ python inference.py --attention_mode ./checkpoints/checkpoint_epoch_
 
 
 
-
+python run_efficient_training.py --dataset_path /home/jack/data/social_nav --num_epochs 1000 --batch_size 4 --sequence_length 5 --target_width 320 --target_height 320 --yolo_model_path models/yolo11n.onnx --embedding_dim 128 --num_heads 4 --resume_checkpoint checkpoints/checkpoint_epoch_2351.pkl 
 
 (sb3) jack@HAL:~/src/RoboTerrain/ros2_ws/src/sb3$ python sb3_SAC.py --mode train --load False --world inspect --vision True
 
@@ -58,3 +58,13 @@ export XLA_PYTHON_CLIENT_MEM_FRACTION=.30
 
 
 python run_efficient_training.py --dataset_path /home/jack/data/social_nav/subway --num_epochs 30 --batch_size 8 --sequence_length 5 --target_width 320 --target_height 320 --yolo_model_path ../models/yolo11n.onnx --embedding_dim 128 --num_heads 4
+
+
+(attent) jack@HAL:~/src/attention$ python run_efficient_training.py --dataset_path /home/jack/data/social_nav --num_epochs 1000 --batch_size 1 --sequence_length 5 --target_width 320 --target_height 320 --yolo_model_path ../models/yolo11n.onnx --embedding_dim 128 --num_heads 4 --resume_checkpoint checkpoints/checkpoint_epoch_2351.pkl 
+xFormers not available
+xFormers not available
+2025-06-22 14:16:46,375 - root - INFO - Preprocessing dataset at /home/jack/data/social_nav using memory mapping
+2025-06-22 14:16:46,375 - root - INFO - Preprocessed dataset already exists at /home/jack/src/attention/preprocessed_data/social_nav_seq5_stride1_w320_h320_max1000.npz
+2025-06-22 14:16:46,375 - root - INFO - Preprocessing dataset at /home/jack/data/social_nav using memory mapping
+2025-06-22 14:16:46,375 - root - INFO - Preprocessed dataset already exists at /home/jack/src/attention/preprocessed_data/social_nav_seq5_stride2_w320_h320_max500.npz
+2025-06-22 14:16:46,375 - root - INFO - Starting efficient training with 1000 epochs

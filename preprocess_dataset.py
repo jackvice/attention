@@ -364,7 +364,7 @@ def preprocess_dataset_memmap(
             temp_npz.close()
             
             logging.info(f"Saving preprocessed dataset to temporary file {temp_npz_path}")
-            np.savez_compressed(
+            np.savez(
                 temp_npz_path,
                 rgb=rgb_memmap,
                 mask=mask_memmap,

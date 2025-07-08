@@ -1,0 +1,1000 @@
+ 1010  ls
+ 1011  mv gp-navigation/ ~/src/
+ 1012  mv LeSTA/ ~/src/
+ 1013  cd ../src/
+ 1014  ls
+ 1015  ls gp-navigation/
+ 1016  ls LeSTA/
+ 1017  cd LeSTA/
+ 1018  emacs Dockerfile 
+ 1019  cd ../gp-navigation/
+ 1020  emacs Dockerfile &
+ 1021  cd ..
+ 1022  nvidia-smi
+ 1023  cd ros1-docker/
+ 1024  ls
+ 1025  cd src/attention/yolo/
+ 1026  ls -lsrt model_output/
+ 1027  conda activate attent
+ 1028  emacs jack_readme.txt &
+ 1029  python run_efficient_training.py --dataset_path /home/jack/data/social_nav --num_epochs 1200 --batch_size 4 --sequence_length 5 --target_width 320 --target_height 320 --yolo_model_path ../models/yolo11n.onnx --embedding_dim 128 --num_heads 4 --resume_checkpoint ./model_output/checkpoint_epoch_1941.pkl 
+ 1030  python run_efficient_training.py --dataset_path /home/jack/data/social_nav --num_epochs 2200 --batch_size 4 --sequence_length 5 --target_width 320 --target_height 320 --yolo_model_path ../models/yolo11n.onnx --embedding_dim 128 --num_heads 4 --resume_checkpoint ./model_output/checkpoint_epoch_1941.pkl 
+ 1031  cd model_output/
+ 1032  ls
+ 1033  ls -lsrt
+ 1034  rm -rf checkpoint_epoch_15*
+ 1035  rm -rf checkpoint_epoch_1*
+ 1036  ls -lsrt
+ 1037  rm checkpoint_epoch_20*
+ 1038  rm -rf checkpoint_epoch_20*
+ 1039  ls -lsrt
+ 1040  cd ..
+ 1041  python run_efficient_training.py --dataset_path /home/jack/data/social_nav --num_epochs 2601 --batch_size 4 --sequence_length 5 --target_width 320 --target_height 320 --yolo_model_path ../models/yolo11n.onnx --embedding_dim 128 --num_heads 4 --resume_checkpoint ./model_output/checkpoint_epoch_2191.pkl 
+ 1042  nvidia-smi
+ 1043  cd Downloads/
+ 1044  ls
+ 1045  ls -lsrt
+ 1046  mv gp_nav_dockerfile_corrected ../src/gp-navigation/Dockerfile_new
+ 1047  mv lesta_dockerfile_corrected ../src/LeSTA/Dockerfile_new
+ 1048  ls ../src/ros1-docker/
+ 1049  cd ../src/ros1-docker/
+ 1050  mv docker_compose.yaml docker_compose.old
+ 1051  mv ~/Downloads/docker_compose.yaml ./
+ 1052  mv ../LeSTA/Dockerfile_new LeSTA
+ 1053  mv ../LeSTA/Dockerfile_new LeSTA/
+ 1054  cd ../LeSTA/
+ 1055  ls
+ 1056  mv Dockerfile Dockerfile_old
+ 1057  mv Dockerfile_new Dockerfile
+ 1058  cd ../gp-navigation/
+ 1059  mv Dockerfile Dockerfile_old
+ 1060  mv Dockerfile_new Dockerfile
+ 1061  cd ../
+ 1062  cd ros1-docker/
+ 1063  ls
+ 1064  ls -lsrt
+ 1065  xhost +local:root
+ 1066  docker-compose build
+ 1067  whereis docker
+ 1068  docker-compose up -d
+ 1069  sudo apt update
+ 1070  docker compose up -d
+ 1071  ls
+ 1072  mv docker_compose.yaml docker_compose.yml
+ 1073  docker compose up -d
+ 1074  ls
+ 1075  mv docker_compose.yml docker-compose.yml
+ 1076  docker compose up -d
+ 1077  emacs docker-compose.yml &
+ 1078  cd ..
+ 1079  cd LeSTA/
+ 1080  ls
+ 1081  emacs docker-compose.yml &
+ 1082  docker compose up -d
+ 1083  emacs Dockerfile &
+ 1084  docker compose up -d
+ 1085  docker compose down
+ 1086  docker builder prune -f
+ 1087  docker compose build --no-cache
+ 1088  docker compose down
+ 1089  docker builder prune -f
+ 1090  docker compose build --no-cache
+ 1091  docker compose down
+ 1092  docker builder prune -f
+ 1093  docker compose build --no-cache
+ 1094  docker compose down
+ 1095  docker builder prune -f
+ 1096  docker compose build --no-cache
+ 1097  emacs docker-compose.yml &
+ 1098  docker compose build
+ 1099  ls
+ 1100  cd ..
+ 1101  git clone https://github.com/abeleinin/gp-navigation.git
+ 1102  rm -rf gp-navigation/
+ 1103  git clone https://github.com/abeleinin/gp-navigation.git
+ 1104  cd gp-navigation/
+ 1105  ls
+ 1106  cp package.xml package_xml.txt
+ 1107  more CMakeLists.txt 
+ 1108  emacs Dockerfile &
+ 1109  emacs docker-compose.yml &
+ 1110  docker compose build
+ 1111  grep -r 'jax'
+ 1112  docker compose build
+ 1113  cd ../attention/yolo/
+ 1114  ls
+ 1115  conda activte tboard
+ 1116  conda activate tboard
+ 1117  ls
+ 1118  cd log_dir/
+ 1119  ls
+ 1120  ls -lsrt
+ 1121  cd ..
+ 1122  tensorbaord --logdir log_dir/
+ 1123  tensorboard --logdir log_dir/
+ 1124  exit
+ 1125  journalctl --boot=-1 --priority=3
+ 1126  dmesg --ctime | less
+ 1127  sudo dmesg --ctime | less
+ 1128  grep -i 'killed process' /var/log/syslog
+ 1129  journalctl --boot=-1 | grep -i oom
+ 1130  journalctl --boot=-1 --since "4 hours ago"
+ 1131  cd src/attention/
+ 1132  git add --all
+ 1133  git commit -m "added depth to fused image"
+ 1134  ls
+ 1135  ls -lsrt
+ 1136  mv \#jack_readme.txt# jack_readme.txt 
+ 1137  mv trajectory_utils.py trajectory_utils_temp.py 
+ 1138  mv \#trajectory_utils.py# trajectory_utils.py
+ 1139  diff trajectory_utils.py trajectory_utils_temp.py 
+ 1140  rm trajectory_utils_temp.py 
+ 1141  ls
+ 1142  emacs inference.py &
+ 1143  git add --all
+ 1144  git commit -m "added depth to fused image"
+ 1145  git push
+ 1146  emacs .gitignore 
+ 1147  git add --all
+ 1148  git commit -m "added depth to fused image"
+ 1149  git push
+ 1150  emacs .gitignore 
+ 1151  git add --all
+ 1152  git commit -m "added depth to fused image"
+ 1153  git push
+ 1154  ls -l
+ 1155  git diff
+ 1156  git add --all
+ 1157  git commit -m "added depth to fused image, take 2"
+ 1158  git push
+ 1159  git status
+ 1160  git diff --stat origin/main  # Or origin/master, etc.
+ 1161  git rm --cached checkpoints/checkpoint_epoch_2351.pkl
+ 1162  git rm --cached checkpoints/depth_anything_v2_vits.pth
+ 1163  git rm --cached models/yolo11n.*
+ 1164  git rm --cached debug_png/*.png
+ 1165  emacs .gitignore &
+ 1166  pip install git-filter-repo
+ 1167  git commit -m "Remove large binary files and update .gitignore"
+ 1168  git push
+ 1169  more .gitignore 
+ 1170  git filter-repo --path checkpoints/ --path models/ --path debug_png/ --invert-paths
+ 1171  git push --force
+ 1172  git rev-list --objects --all |   git cat-file --batch-check='%(objecttype) %(objectname) %(objectsize) %(rest)' |   grep '^blob' |   sort -k3 -n -r |   head -n 10
+ 1173  git filter-repo --force   --path checkpoints/   --path models/   --path debug_png/   --path log_dir/   --invert-paths
+ 1174  git push --force
+ 1175  git remote add origin git@github.com:jackvice/attention.git
+ 1176  git push --force origin main
+ 1177  ls test_output/
+ 1178  git rev-list --objects --all | grep 2540196d8b5f1a66d6b420607554de3c95926de5
+ 1179  git filter-repo --force   --path checkpoints/   --path models/   --path debug_png/   --path log_dir/   --path test_output/   --invert-paths
+ 1180  git push --force origin main
+ 1181  git remote add origin git@github.com:jackvice/attention.git  # if needed again
+ 1182  git push --force origin main
+ 1183  more .gitignore 
+ 1184  ls -la
+ 1185  emacs .gitignore &
+ 1186  ls -lsrt
+ 1187  emacs trajectory_utils.py &
+ 1188  diff inference.py inference_temp.py
+ 1189  rm inference_temp.py
+ 1190  grep -r 'import jax'
+ 1191  cd ..
+ 1192  cd attention/
+ 1193  conda activate attent
+ 1194  python inference.py --attention_mode ./checkpoints/checkpoint_epoch_2351.pkl 
+ 1195  ls
+ 1196  ls -lsrt checkpoints/
+ 1197  nvidia-smi
+ 1198  nvidia-smi -l
+ 1199  ls /dev/shm/
+ 1200  ros2 topic list
+ 1201  ros2 topic echo /rover/pose_array 
+ 1202  ls /dev/shm/
+ 1203  ls
+ 1204  ls -lsrt tboard_logs/
+ 1205  cd tboard_logs/
+ 1206  ls
+ 1207  mv SAC_inspect_20250223_2236/ ~/backup_2025/attention/
+ 1208  mv SAC_inspect_20250601_1* ~/backup_2025/attention/
+ 1209  ls
+ 1210  mv SAC_inspect_20250611_22* ~/backup_2025/attention/
+ 1211  ls
+ 1212  cd ..
+ 1213  conda activate tboard
+ 1214  tensorboard --logdir tboard_logs/
+ 1215  emacs jack_notes.txt &
+ 1216  cd attention/
+ 1217  ls
+ 1218  rm inference.py*
+ 1219  ls
+ 1220  emacs jack_readme.txt &
+ 1221  cd 
+ 1222  cd src/RoboTerrain/ros2_ws/src/
+ 1223  ls
+ 1224  cd attention/inference/
+ 1225  python ros2_mem_share.py 
+ 1226  ls /dev/shm/
+ 1227  python ros2_mem_share.py 
+ 1228  cd RoboTerrain/ros2_ws/src/
+ 1229  ls
+ 1230  python ign_ros2_pose_topic.py inspect rover_zero4wd
+ 1231  ros2 launch leo_gz_bringup leo_gz.launch.py sim_world:=marsyard2020.sdf robot_ns:=leo1
+ 1232  ros2 launch roverrobotics_gazebo 4wd_rover_gazebo.launch.py
+ 1233  ls
+ 1234  cd sb3/
+ 1235  ls
+ 1236  ls -lsrt checkpoints/
+ 1237  emacs sb3_SAC.py &
+ 1238  conda activate sb3
+ 1239  cd ../dynamic_obstacles/
+ 1240  python spawn.py 
+ 1241  cd ../sb3/
+ 1242  nvidia-smi -l
+ 1243  python sb3_SAC_fused.py --mode train --load True --checkpoint_name checkpoints/vec_normalize_20250611_2223_initial.pkl --world inspect --vision True
+ 1244  python sb3_SAC.py --mode train --load True --checkpoint_name checkpoints/vec_normalize_20250611_2223_initial.pkl --world inspect --vision True
+ 1245  python sb3_SAC.py --mode train --load False --world inspect --vision True
+ 1246  python sb3_SAC.py --mode train --load True --checkpoint_name checkpoints/vec_normalize_20250611_2223_initial.pkl --world inspect --vision True
+ 1247  python sb3_SAC.py --mode train --load False  --world inspect --vision True
+ 1248  ls
+ 1249  emacs Dockerfile &
+ 1250  cd ../gp-navigation/
+ 1251  ls
+ 1252  emacs Dockerfile &
+ 1253  cp Dockerfile Dockerfile.txt
+ 1254  cd
+ 1255  ls
+ 1256  cd src/
+ 1257  ls
+ 1258  cd LeSTA/
+ 1259  ls
+ 1260  docker ps
+ 1261  history
+ 1262  nvidia-smi
+ 1263  docker build
+ 1264  docker compose build
+ 1265  docker ps
+ 1266  docker images
+ 1267  docker rm a4300564423b
+ 1268  docker images
+ 1269  ls
+ 1270  emacs jack_readme.txt &
+ 1271  docker run -it --rm   --network host   -v /tmp/.X11-unix:/tmp/.X11-unix   -v $(pwd):/root/catkin_ws/src/workspace_data   -e DISPLAY=$DISPLAY   lesta:latest bash
+ 1272  cd ..
+ 1273  ls
+ 1274  docker run -it --rm   --network host   -v /tmp/.X11-unix:/tmp/.X11-unix   -v $(pwd):/root/ros_ws/src/workspace_data   -e DISPLAY=$DISPLAY   lesta:latest bash
+ 1275  # Mount your host directory for live editing
+ 1276  docker run -it --rm   --network host   -v $(pwd):/root/ros_ws/src/LeSTA   -e DISPLAY=$DISPLAY   lesta-lesta bash
+ 1277  docker run -it --rm   --network host   -v /tmp/.X11-unix:/tmp/.X11-unix   -v $(pwd):/root/ros_ws/src/workspace_data   -e DISPLAY=$DISPLAY   lesta:latest bash
+ 1278  cd LeSTA/
+ 1279  ls
+ 1280  cp Dockerfile Dockerfile.txt
+ 1281  emacs Dockerfile &
+ 1282  docker build -t lesta-cuda:latest .
+ 1283  ls
+ 1284  mv docker-compose.yml docker-compose.yml.old
+ 1285  emacs docker-compose.yml &
+ 1286  docker-compose up --build
+ 1287  docker compose build
+ 1288  docker-compose up --build
+ 1289  docker compose build
+ 1290  docker images
+ 1291  cd ..
+ 1292  ls
+ 1293  ls -lsrt
+ 1294  ls
+ 1295  nvidia-smi
+ 1296  cd ~/src/attention/
+ 1297  ls
+ 1298  emacs preprocess_dataset.py &
+ 1299  emacs trajectory_utils.py &
+ 1300  grep -r 'courtyard'
+ 1301  grep -r 'gazebo'
+ 1302  pushup
+ 1303  ls -lsrt
+ 1304  pushup
+ 1305  git push --set-upstream origin main
+ 1306  cd src/LeSTA/
+ 1307  docker-compose up --build
+ 1308  docker compose up --build
+ 1309  top
+ 1310  conda activate attent
+ 1311  ls
+ 1312  cd backup_2025/
+ 1313  ls
+ 1314  ls -lsrt
+ 1315  cd attention
+ 1316  ls
+ 1317  more jack_readme.txt~ 
+ 1318  cd yolo/
+ 1319  ls
+ 1320  emacs jack_readme.txt &
+ 1321  ls model_output/
+ 1322  ls ../models/
+ 1323  cd ~/data/social_nav/
+ 1324  ls
+ 1325  ls gazebo
+ 1326  ls gazebo/sequence_001/
+ 1327  ls gazebo/sequence_001/cam_img/1/data_rgb/100.png 
+ 1328  ls gazebo_2/sequence_001/cam_img/1/data_rgb/100.png 
+ 1329  ls
+ 1330  ls -l
+ 1331  ls sit_preproc/
+ 1332  cd --output_dir/
+ 1333  mv '--output_dir/' output_dir
+ 1334  mv -r  '--output_dir/'
+ 1335  rm -r  '--output_dir/'
+ 1336  find / -type d -name 'outdoor'
+ 1337  find . -type d -name 'outdoor'
+ 1338  ls
+ 1339  mv gazebo gazebo_001
+ 1340  mv gazebo_2/ gazebo_002
+ 1341  mv gazebo_3/ gazebo_003
+ 1342  ls
+ 1343  ls tmp/
+ 1344  mv gazebo_* tmp
+ 1345  ls
+ 1346  cd ..
+ 1347  cd 
+ 1348  cd src/
+ 1349  ls
+ 1350  cd attention/
+ 1351  ls
+ 1352  emacs run_efficient_training.py &
+ 1353  grep -r --include '*.py' 'checkpoint_epoch'
+ 1354  emacs trajectory_model.py &
+ 1355  ls -lsrt ~/backup_2025/attention/yolo/model_output/
+ 1356  ls
+ 1357  ls checkpoints/
+ 1358  conda activate attent
+ 1359  python run_efficient_training.py --dataset_path /home/jack/data/social_nav --num_epochs 3000 --batch_size 4 --sequence_length 5 --target_width 320 --target_height 320 --yolo_model_path ../models/yolo11n.onnx --embedding_dim 128 --num_heads 4 --resume_checkpoint ./checkpoints/checkpoint_epoch_2351.pkl 
+ 1360  ls models/
+ 1361  grep -r 'yolo11n*'
+ 1362  grep -r '../models/'
+ 1363  grep -r --incldue '*.py' '../models'
+ 1364  grep -r --include '*.py' '../models'
+ 1365  emacs run_efficient_training.py &
+ 1366  python run_efficient_training.py --dataset_path /home/jack/data/social_nav --num_epochs 3000 --batch_size 4 --sequence_length 5 --target_width 320 --target_height 320 --yolo_model_path ./models/yolo11n.onnx --embedding_dim 128 --num_heads 4 --resume_checkpoint ./checkpoints/checkpoint_epoch_2351.pkl 
+ 1367  mv trajectory_utils.py trajectory_utils_gazebo.py
+ 1368  mv ~/Downloads/trajectory_utils.py ./
+ 1369  python run_efficient_training.py --dataset_path /home/jack/data/social_nav --num_epochs 3000 --batch_size 4 --sequence_length 5 --target_width 320 --target_height 320 --yolo_model_path ./models/yolo11n.onnx --embedding_dim 128 --num_heads 4 --resume_checkpoint ./checkpoints/checkpoint_epoch_2351.pkl 
+ 1370  emacs trajectory_model.py &
+ 1371  top
+ 1372  kill -9 19972
+ 1373  top
+ 1374  exit
+ 1375  ls
+ 1376  mv ~/Downloads/env_a.zip ./
+ 1377  ls
+ 1378  ls ..
+ 1379  ls -l
+ 1380  mv ~/Downloads/env_b.zip ./
+ 1381  docker exec -it brave_agnesi bash
+ 1382  mv ~/Downloads/LeSTA_campus_road_libtorch.pt src/LeSTA/checkpoints/
+ 1383  cd src/LeSTA/
+ 1384  mkdir checkpoints
+ 1385  mv ~/Downloads/LeSTA_campus_road_libtorch.pt src/LeSTA/checkpoints/
+ 1386  mv ~/Downloads/LeSTA_campus_road_libtorch.pt checkpoints/
+ 1387  ls -lsrth ~/Downloads/
+ 1388  ls
+ 1389  mkdir src
+ 1390  mv lesta_ros/ src/
+ 1391  ls
+ 1392  mv height_mapping src/ 2>/dev/null || echo "height_mapping not found, skipping"
+ 1393  xhost +local:root
+ 1394  echo $ROS_DISTRO
+ 1395  gz sim
+ 1396  ign gazebo -v 4 -r visualize_lidar.sdf
+ 1397  find . -name 'traversability_prediction.launch'
+ 1398  emacs src/lesta_ros/launch/traversability_prediction.launch &
+ 1399  conda activate tboard
+ 1400  conda deactivate
+ 1401  conda env list
+ 1402  conda activate isaaclab
+ 1403  pip install sympy
+ 1404  emacs llm_test.py &
+ 1405  python llm_test.py 
+ 1406  cd ../gp-navigation/
+ 1407  ls
+ 1408  emacs jack_readme.txt &
+ 1409  conda deactivate
+ 1410  docker ps
+ 1411  docker exec -it nostalgic_clarke bash
+ 1412  mkdir models
+ 1413  ls
+ 1414  mv env_a.zip models/
+ 1415  mv env_b.zip models/
+ 1416  cd models/
+ 1417  ls
+ 1418  unzip env_a.zip 
+ 1419  unzip env_b.zip 
+ 1420  docker ps
+ 1421  docker exec -it brave_agnesi bash
+ 1422  cd ..
+ 1423  ls
+ 1424  ls -lsrt
+ 1425  docker images
+ 1426  cd src/
+ 1427  ls
+ 1428  LeSTA/
+ 1429  ls
+ 1430  cd LeSTA/
+ 1431  ls
+ 1432  emacs jack_readme.txt &
+ 1433  docker run -it --rm   --network host   -v /tmp/.X11-unix:/tmp/.X11-unix   -v $(pwd):/root/ros_ws   -e DISPLAY=$DISPLAY   lesta-lesta bash
+ 1434  ls
+ 1435  docker ps
+ 1436  docker compose build --no-cache
+ 1437  docker run -it --rm   --network host   -v /tmp/.X11-unix:/tmp/.X11-unix   -v $(pwd):/root/ros_ws   -e DISPLAY=$DISPLAY   lesta-lesta bash
+ 1438  docker ps
+ 1439  docker images
+ 1440  docker run -it --rm   --network host   -v /tmp/.X11-unix:/tmp/.X11-unix   -v $(pwd):/root/ros_ws   -e DISPLAY=$DISPLAY   lesta-cuda:latest bash
+ 1441  cd ../gp-navigation/
+ 1442  ls
+ 1443  docker images
+ 1444  docker ps
+ 1445  docker rm 4dd1882041fd
+ 1446  docker image rm 4dd1882041fd
+ 1447  docker image rm eca906da3031
+ 1448  docker ps -a
+ 1449  docker rm ros2_rl_container
+ 1450  docker images
+ 1451  docker run -it --rm   --network host   -e DISPLAY=host.docker.internal:0.0   -v $(pwd):/root/catkin_ws/src/gp-navigation-host   gp-navigation bash
+ 1452  docker run -it --rm   --network host   -e DISPLAY=$DISPLAY   -v /tmp/.X11-unix:/tmp/.X11-unix:rw   gp-navigation bash
+ 1453  grep -r "COPY"
+ 1454  emacs Dockerfile &
+ 1455  docker run -it --rm   --network host   -e DISPLAY=$DISPLAY   -v /tmp/.X11-unix:/tmp/.X11-unix:rw   -v $(pwd):/root/catkin_ws/src/gp-navigation:rw   gp-navigation bash
+ 1456  cd src/
+ 1457  ls
+ 1458  ls -lsrt
+ 1459  cd BenchMARL/
+ 1460  ls
+ 1461  ls -lsrt
+ 1462  emacs jack_readme.txt &
+ 1463  cd ..
+ 1464  ls
+ 1465  conda env list
+ 1466  conda activate marllib
+ 1467  ls -lsrt
+ 1468  cd MARLlib/
+ 1469  ls
+ 1470  emacs jmv_test.py &
+ 1471  python jmv_test.py 
+ 1472  cd ..
+ 1473  BenchMARL/
+ 1474  cd BenchMARL/
+ 1475  ls
+ 1476  conda deactivate
+ 1477  conda env list
+ 1478  conda activate b_marl
+ 1479  ls
+ 1480  python benchmarl/run.py algorithm=qmix task=vmas/dispersion experiment.prefer_continuous_actions=false
+ 1481  python benchmarl/run.py algorithm=qmix task=vmas/dropout
+ 1482  python benchmarl/run.py algorithm=qmix task=vmas/dispersion
+ 1483  python benchmarl/run.py algorithm=mappo task=vmas/dispersion experiment.checkpoint_interval=120000 experiment.checkpoint_at_end=true
+ 1484  python benchmarl/run.py algorithm=qmix task=vmas/dispersion experiment.checkpoint_interval=120000 experiment.checkpoint_at_end=true
+ 1485  python benchmarl/run.py algorithm=mappo task=vmas/dispersion experiment.checkpoint_interval=120000 experiment.checkpoint_at_end=true
+ 1486  python benchmarl/run.py algorithm=qmix task=vmas/dispersion experiment.checkpoint_interval=120000 experiment.checkpoint_at_end=true
+ 1487  pyhton benchmarl/evaluate.py outputs/2025-06-17/14-18-19/qmix_dispersion_mlp__b3383626_25_06_17-14_18_19/checkpoints/checkpoint_3000000.pt 
+ 1488  python benchmarl/evaluate.py outputs/2025-06-17/14-18-19/qmix_dispersion_mlp__b3383626_25_06_17-14_18_19/checkpoints/checkpoint_3000000.pt 
+ 1489  emacs benchmarl/evaluate.py &
+ 1490  python benchmarl/evaluate.py outputs/2025-06-17/14-18-19/qmix_dispersion_mlp__b3383626_25_06_17-14_18_19/checkpoints/checkpoint_3000000.pt 
+ 1491  python benchmarl/jmv_evaluate.py outputs/2025-06-17/14-18-19/qmix_dispersion_mlp__b3383626_25_06_17-14_18_19/checkpoints/checkpoint_3000000.pt 
+ 1492  ls
+ 1493  ls -lsrt
+ 1494  echo display
+ 1495  echo $DISPLAY
+ 1496  python benchmarl/jmv_evaluate.py 
+ 1497  python benchmarl/jmv_evaluate.py outputs/2025-06-17/20-34-47/
+ 1498  emacs test_policy.py &
+ 1499  python test_policy.py 
+ 1500  history
+ 1501  more benchmarl/run.py 
+ 1502  ls -lsrt benchmarl
+ 1503  python benchmarl/run.py algorithm=qmix task=vmas/dispersion experiment.max_n_frames=6000000 experiment.restore_file="outputs/2025-06-17/14-18-19/qmix_dispersion_mlp__b3383626_25_06_17-14_18_19/checkpoints/checkpoint_3000000.pt"
+ 1504  history
+ 1505  python benchmarl/run.py algorithm=qmix task=vmas/dispersion experiment.max_n_frames=12000000 experiment.restore_file="outputs/2025-06-17/14-18-19/qmix_dispersion_mlp__b3383626_25_06_17-14_18_19/checkpoints/checkpoint_3000000.pt" experiment.checkpoint_interval=120000 experiment.checkpoint_at_end=true
+ 1506  ls
+ 1507  ls outputs/2025-06-17/13-
+ 1508  python test_policy.py 
+ 1509  python benchmarl/run.py algorithm=qmix task=vmas/dispersion experiment.max_n_frames=20000000 experiment.restore_file="outputs/2025-06-17/14-18-19/qmix_dispersion_mlp__b3383626_25_06_17-14_18_19/checkpoints/checkpoint_12000000.pt" experiment.checkpoint_interval=120000 experiment.checkpoint_at_end=true
+ 1510  python benchmarl/run.py algorithm=qmix task=vmas/dispersion experiment.max_n_frames=50000000 experiment.restore_file="outputs/2025-06-17/14-18-19/qmix_dispersion_mlp__b3383626_25_06_17-14_18_19/checkpoints/checkpoint_20000000.pt" experiment.checkpoint_interval=120000 experiment.checkpoint_at_end=true
+ 1511  ls outputs/2025-06-17/14-18-19/qmix_dispersion_mlp__b3383626_25_06_17-14_18_19/checkpoints/
+ 1512  python benchmarl/run.py algorithm=qmix task=vmas/dispersion experiment.max_n_frames=50000000 experiment.restore_file="outputs/2025-06-17/14-18-19/qmix_dispersion_mlp__b3383626_25_06_17-14_18_19/checkpoints/checkpoint_20004000.pt" experiment.checkpoint_interval=120000 experiment.checkpoint_at_end=true
+ 1513  python benchmarl/run.py algorithm=qmix task=vmas/dispersion experiment.max_n_frames=50000000  experiment.checkpoint_interval=120000 experiment.checkpoint_at_end=true
+ 1514  python benchmarl/run.py algorithm=qmix task=vmas/dispersion experiment.max_n_frames=5000000  experiment.checkpoint_interval=120000 experiment.checkpoint_at_end=true task.n_agents=3 task.n_food=3
+ 1515  cd outputs/
+ 1516  ls
+ 1517  ls -lsrt
+ 1518  rm -rf 2025-06-08
+ 1519  rm -rf 2025-06-12
+ 1520  rm -rf 2025-06-14
+ 1521  rm -rf 2025-06-15
+ 1522  rm -rf 2025-06-16
+ 1523  cd ..
+ 1524  ls outputs/2025-06-18/
+ 1525  ls -lsrt outputs/2025-06-18/
+ 1526  ls -lsrt outputs/2025-06-18/10-27-21/
+ 1527  ls -lsrt outputs/2025-06-18/10-27-21/qmix_dispersion_mlp__ba0d0fe4_25_06_18-10_27_21/
+ 1528  ls -lsrt outputs/2025-06-18/10-27-21/qmix_dispersion_mlp__ba0d0fe4_25_06_18-10_27_21/checkpoints/
+ 1529  ls -lsrt outputs/2025-06-18/10-27-21/qmix_dispersion_mlp__ba0d0fe4_25_06_18-10_27_21/checkpoints/checkpoint_5004000.pt 
+ 1530  python benchmarl/run.py algorithm=qmix task=vmas/dispersion experiment.max_n_frames=200_000_000 experiment.restore_file="outputs/2025-06-18/10-27-21/qmix_dispersion_mlp__ba0d0fe4_25_06_18-10_27_21/checkpoints/checkpoint_5004000.pt" experiment.checkpoint_interval=120000 experiment.checkpoint_at_end=true
+ 1531  more outputs/2025-06-18/10-27-21/qmix_dispersion_mlp__ba0d0fe4_25_06_18-10_27_21/wandb/run-20250618_125141-qmix_dispersion_mlp__ba0d0fe4_25_06_18-10_27_21/logs
+ 1532  more outputs/2025-06-18/10-27-21/qmix_dispersion_mlp__ba0d0fe4_25_06_18-10_27_21/wandb/run-20250618_125141-qmix_dispersion_mlp__ba0d0fe4_25_06_18-10_27_21/logs/debug.log 
+ 1533  python benchmarl/run.py algorithm=qmix task=vmas/dispersion experiment.max_n_frames=200000000 experiment.restore_file="outputs/2025-06-18/10-27-21/qmix_dispersion_mlp__ba0d0fe4_25_06_18-10_27_21/checkpoints/checkpoint_5004000.pt" experiment.checkpoint_interval=120000 experiment.checkpoint_at_end=true
+ 1534  ls outputs/2025-06-18/10-27-21/qmix_dispersion_mlp__ba0d0fe4_25_06_18-10_27_21/checkpoints/checkpoint_5004000.pt
+ 1535  python benchmarl/run.py algorithm=qmix task=vmas/dispersion experiment.max_n_frames=200000000 experiment.restore_file="outputs/2025-06-18/10-27-21/qmix_dispersion_mlp__ba0d0fe4_25_06_18-10_27_21/checkpoints/checkpoint_5004000.pt" experiment.checkpoint_interval=120000 experiment.checkpoint_at_end=true task.n_agents=3 task.n_food=3
+ 1536  python benchmarl/run.py algorithm=qmix task=vmas/dispersion experiment.max_n_frames=200000000 experiment.restore_file="outputs/2025-06-18/10-27-21/qmix_dispersion_mlp__ba0d0fe4_25_06_18-10_27_21/checkpoints/checkpoint_79920000.pt" experiment.checkpoint_interval=120000 experiment.checkpoint_at_end=true task.n_agents=3 task.n_food=3
+ 1537  python benchmarl/run.py algorithm=qmix task=vmas/dispersion experiment.max_n_frames=200000000 experiment.restore_file="outputs/2025-06-18/10-27-21/qmix_dispersion_mlp__ba0d0fe4_25_06_18-10_27_21/checkpoints/checkpoint_83040000.pt" experiment.checkpoint_interval=120000 experiment.checkpoint_at_end=true task.n_agents=3 task.n_food=3
+ 1538  python benchmarl/run.py algorithm=qmix task=vmas/dispersion experiment.max_n_frames=200000000 experiment.restore_file="/2025-06-18/10-27-21/qmix_dispersion_mlp__ba0d0fe4_25_06_18-10_27_21/checkpoints/checkpoint_83040000.pt" experiment.checkpoint_interval=120000 experiment.checkpoint_at_end=true task.n_agents=3 task.n_food=3
+ 1539  python benchmarl/run.py algorithm=qmix task=vmas/dispersion experiment.max_n_frames=200000000 experiment.restore_file="outputs/2025-06-18/10-27-21/qmix_dispersion_mlp__ba0d0fe4_25_06_18-10_27_21/checkpoints/checkpoint_83040000.pt" experiment.checkpoint_interval=120000 experiment.checkpoint_at_end=true task.n_agents=3 task.n_food=3
+ 1540  python benchmarl/run.py algorithm=qmix task=vmas/dispersion experiment.max_n_frames=20000 experiment.checkpoint_interval=120000 experiment.checkpoint_at_end=true task.n_agents=3 task.n_food=3
+ 1541  python benchmarl/run.py algorithm=qmix task=vmas/dispersion experiment.max_n_frames=2000000 experiment.checkpoint_interval=120000 experiment.checkpoint_at_end=true task.n_agents=3 task.n_food=3
+ 1542  python benchmarl/run.py algorithm=qmix task=vmas/dispersion experiment.max_n_frames=200000000 experiment.restore_file="outputs/2025-06-18/10-27-21/qmix_dispersion_mlp__ba0d0fe4_25_06_18-10_27_21/checkpoints/checkpoint_83040000.pt" experiment.checkpoint_interval=120000 experiment.checkpoint_at_end=true task.n_agents=3 task.n_food=3
+ 1543  python benchmarl/run.py algorithm=qmix task=vmas/dispersion experiment.max_n_frames=200000000 experiment.restore_file="outputs/2025-06-18/10-27-21/qmix_dispersion_mlp__ba0d0fe4_25_06_18-10_27_21/checkpoints/checkpoint_111600000.pt" experiment.checkpoint_interval=120000 experiment.checkpoint_at_end=true task.n_agents=3 task.n_food=3
+ 1544  python benchmarl/run.py algorithm=qmix task=vmas/dispersion experiment.max_n_frames=250000000 experiment.restore_file="outputs/2025-06-18/10-27-21/qmix_dispersion_mlp__ba0d0fe4_25_06_18-10_27_21/checkpoints/checkpoint_200004000.pt" experiment.checkpoint_interval=120000 experiment.checkpoint_at_end=true task.n_agents=3 task.n_food=3
+ 1545  python benchmarl/run.py algorithm=MASAC task=vmas/dispersion
+ 1546  python benchmarl/run.py algorithm=masac task=vmas/dispersion
+ 1547  python benchmarl/run.py algorithm=masac task=vmas/dispersion experiment.max_n_frames=5000000  experiment.checkpoint_interval=120000 experiment.checkpoint_at_end=tru
+ 1548  python benchmarl/run.py algorithm=masac task=vmas/dispersion experiment.max_n_frames=5000000  experiment.checkpoint_interval=120000 experiment.checkpoint_at_end=true
+ 1549  python benchmarl/run.py algorithm=masac task=vmas/dispersion experiment.max_n_frames=50000000  experiment.checkpoint_interval=120000 experiment.checkpoint_at_end=true experiment.restore_file="outputs/2025-06-21/20-25-55/masac_dispersion_mlp__b37de23e_25_06_21-20_25_55/checkpoints/checkpoint_3600000.pt"
+ 1550  python benchmarl/run.py algorithm=masac task=vmas/dispersion experiment.max_n_frames=50000000  experiment.checkpoint_interval=120000 experiment.checkpoint_at_end=true experiment.restore_file="outputs/2025-06-21/20-25-55/masac_dispersion_mlp__b37de23e_25_06_21-20_25_55/checkpoints/checkpoint_4200000.pt"  task.n_agents=5 task.n_food=5
+ 1551  python benchmarl/run.py algorithm=masac task=vmas/dispersion experiment.max_n_frames=50000000  experiment.checkpoint_interval=120000 experiment.checkpoint_at_end=true  task.n_agents=5 task.n_food=5
+ 1552  cd src/attention/checkpoints/
+ 1553  ls
+ 1554  cd ../model_output/
+ 1555  ls
+ 1556  ls -lsrt
+ 1557  mv checkpoint_epoch_1000.pkl ../checkpoints/checkpoint_epoch_1000_gazebo_only.pkl 
+ 1558  rm checkpoint_epoch_1*
+ 1559  htop
+ 1560  ls
+ 1561  ls -lsrth preprocessed_data/
+ 1562  conda activate tboard
+ 1563  cd ../BenchMARL/
+ 1564  ls
+ 1565  more jack_readme.txt
+ 1566  emacs test_policy.py
+ 1567  emacs test_policy_mp4.py
+ 1568  cd ../attention/
+ 1569  ls
+ 1570  conda deactivate
+ 1571  conda activate attent
+ 1572  history
+ 1573  ls -lsrt
+ 1574  ls model_output/
+ 1575  ls -lsrt model_output/
+ 1576  ls checkpoints/
+ 1577  emacs jack_readme.txt &
+ 1578  python run_efficient_training.py --dataset_path /home/jack/data/social_nav/gazebo/ --num_epochs 3300 --batch_size 4 --sequence_length 5 --target_width 320 --target_height 320 --yolo_model_path models/yolo11n.onnx --embedding_dim 128 --num_heads 4 --resume_checkpoint checkpoints/checkpoint_epoch_2351.pkl
+ 1579  cd src/attention/
+ 1580  ls -lsrt
+ 1581  conda ativate attent
+ 1582  conda activate attent
+ 1583  history > ~/temp/history_06_25_25.txt
+ 1584  emacs ~/temp/history_06_25_25.txt &
+ 1585  ls -lsrt
+ 1586  cd model_output/
+ 1587  ls
+ 1588  cd debug_images/
+ 1589  ls
+ 1590  cd ..
+ 1591  grep -r 'debug'
+ 1592  emacs trajectory_utils.py &
+ 1593  mv ~/Downloads/test_attention.py ./
+ 1594  git add --all
+ 1595  git commit -m 'added test_attention.py'
+ 1596  git push
+ 1597  emacs test_attention.py &
+ 1598  python test_attention_model.py --checkpoint ./checkpoints/checkpoint_epoch_2351.pkl
+ 1599  python test_attention.py --checkpoint ./checkpoints/checkpoint_epoch_2351.pkl
+ 1600  mv ~/Downloads/test_attention.py test_attention_2.py
+ 1601  ls -lsrt
+ 1602  mv test_attention test_attention_bak
+ 1603  emacs .gitignore 
+ 1604  python test_attention_2.py --checkpoint ./checkpoints/checkpoint_epoch_2351.pkl
+ 1605  python test_attention_2.py --checkpoint ./model_output/checkpoint_epoch_3290.pkl 
+ 1606  python run_efficient_training.py --dataset_path /home/jack/data/social_nav/gazebo/ --num_epochs 3000 --batch_size 4 --sequence_length 5 --target_width 320 --target_height 320 --yolo_model_path models/yolo11n.onnx --embedding_dim 128 --num_heads 4 --resume_checkpoint checkpoints/checkpoint_epoch_2351.pkl
+ 1607  cd src/attention/
+ 1608  emacs jack_readme.txt &
+ 1609  conda activate tboard
+ 1610  cd 
+ 1611  cd data/social_nav/gazebo/
+ 1612  ls
+ 1613  ls gazebo_001/
+ 1614  ls gazebo_001/sequence_001/
+ 1615  ls gazebo_001/sequence_001/cam_img/
+ 1616  ls gazebo_001/sequence_001/cam_img/1/data_rgb/
+ 1617  find . -name '*.png' | wc -l
+ 1618  cd
+ 1619  cd src/attention/
+ 1620  ls
+ 1621  cd checkpoints/
+ 1622  ls
+ 1623  cd ../model_output/
+ 1624  ls
+ 1625  ls -lsrt
+ 1626  cd ..
+ 1627  mv test_attention/ test_attention_2351
+ 1628  grep -r 'all_pedestrians[-1]'
+ 1629  grep -r --incldue='*.py' 'all_pedestrians[-1]'
+ 1630  grep -r --include='*.py' 'all_pedestrians[-1]'
+ 1631  grep -r --include='*.py' 'all_pedestrians'
+ 1632  grep -r --include='*.py' 'future_pedestrians'
+ 1633  mkdir test
+ 1634  mv test_attention*.py test
+ 1635  ls -lsrt
+ 1636  emacs trajectory_model.py &
+ 1637  ls model_output/
+ 1638  mv model_output/ ~/backup_2025/model_output_attention_06_25_25
+ 1639  mkdir model_ouput
+ 1640  ls model_output/
+ 1641  ls -lsrt
+ 1642  rm -rf model_output/
+ 1643  ls ~/data/social_nav/sit_preproc/
+ 1644  ls ~/data/social_nav/gazebo/
+ 1645  cd preprocessed_data/
+ 1646  ls
+ 1647  rm -rf gazebo_seq5_stride*
+ 1648  cd ..
+ 1649  ls
+ 1650  rm test_attention
+ 1651  rm -rf test_attention
+ 1652  emacs .gitignore &
+ 1653  ls -l
+ 1654  ls inference
+ 1655  rm -rf test_attention_2351/
+ 1656  ls test_attention_bak/
+ 1657  rm test_attention_bak/
+ 1658  rm -rf test_attention_bak/
+ 1659  nvidia-smi
+ 1660  ls
+ 1661  tensorboard --logdor log_dir/
+ 1662  tensorboard --logdir log_dir/
+ 1663  nvidia-smi
+ 1664  nvidia-smi -l
+ 1665  cd miniconda3/envs/Bmarl/
+ 1666  find . -name dispersion.py
+ 1667  cp lib/python3.11/site-packages/vmas/scenarios/dispersion.py ~/Downloads/
+ 1668  ls
+ 1669  cd
+ 1670  cd src/BenchMARL/
+ 1671  ls
+ 1672  cd notebooks/
+ 1673  ls
+ 1674  cd ..
+ 1675  grep -r 'dispersion'
+ 1676  more benchmarl.egg-info/SOURCES.txt 
+ 1677  ls
+ 1678  grep -r 'dispersion'
+ 1679  cp ~/backup_2025/BenchMARL/jack_readme.txt ./
+ 1680  ls
+ 1681  emacs jack_readme.txt &
+ 1682  conda activate Bmarl
+ 1683  python benchmarl/run.py algorithm=masac task=vmas/dispersion  experiment.checkpoint_interval=120000 experiment.checkpoint_at_end=true experiment.max_n_frames=60000000 off_policy_n_envs_per_worker=60 off_policy_collected_frames_per_batch=20000 ask.n_agents=3 task.n_food=3
+ 1684  python benchmarl/run.py algorithm=masac task=vmas/dispersion  experiment.checkpoint_interval=120000 experiment.checkpoint_at_end=true experiment.max_n_frames=60000000 experiment.off_policy_n_envs_per_worker=60 experiment.off_policy_collected_frames_per_batch=20000 ask.n_agents=3 task.n_food=3
+ 1685  python benchmarl/run.py algorithm=masac task=vmas/dispersion  experiment.checkpoint_interval=120000 experiment.checkpoint_at_end=true experiment.max_n_frames=60000000 experiment.off_policy_n_envs_per_worker=60 experiment.off_policy_collected_frames_per_batch=20000 task.n_agents=3 task.n_food=3
+ 1686  cd src/BenchMARL/
+ 1687  ls
+ 1688  ls -lsrt
+ 1689  more outputs/
+ 1690  mv '#jack_readme.txt#' jack_readme.txt 
+ 1691  emacs jack_readme.txt &
+ 1692  find . -type f -name "*.pt" -exec ls -lsrt --time-style=long-iso {} +
+ 1693  cd outputs/2025-06-26/08-21-44/
+ 1694  ls
+ 1695  cd masac_dispersion_mlp__8d039d19_25_06_26-08_21_44/
+ 1696  ls
+ 1697  cd masac_dispersion_mlp__8d039d19_25_06_26-08_21_44/
+ 1698  ls
+ 1699  ls videos/
+ 1700  ls -lsrt
+ 1701  ls -lsrt videos/
+ 1702  cp videos/eval_video_999.mp4 ~/
+ 1703  ls
+ 1704  cd Downloads/
+ 1705  ls -lsrt
+ 1706  cd ../src/
+ 1707  ls
+ 1708  conda env list
+ 1709  conda acitvate jaxMarl
+ 1710  conda activate jaxMarl
+ 1711  ls -lsrt
+ 1712  cd JaxMARL/
+ 1713  ls
+ 1714  ls -lsrt
+ 1715  more test.py
+ 1716  emacs simple.py &
+ 1717  python simple.py 
+ 1718  python test.py 
+ 1719  pip install brax
+ 1720  python simple.py 
+ 1721  conda create env --name jupyter python=3.12
+ 1722  conda create --name jupyter python=3.12
+ 1723  conda activate jupyter
+ 1724  pip install jupyterlab
+ 1725  jupyter lab
+ 1726  cd jaxmarl/tutorials/
+ 1727  jupyter lab
+ 1728  cd
+ 1729  cd src/
+ 1730  conda deactivate
+ 1731  conda create --name mava python=3.12
+ 1732  conda activate mava
+ 1733  git clone https://github.com/instadeepai/Mava.git
+ 1734  cd Mava
+ 1735  pip install -e ".[cuda12]"  
+ 1736  python mava/systems/ppo/anakin/ff_ippo.py
+ 1737  pip install cuSPARSE
+ 1738  nvidia-smi
+ 1739  nvcc --version
+ 1740  pip list | grep jax
+ 1741  # Uninstall existing JAX completely
+ 1742  pip uninstall jax jaxlib jax-plugins -y
+ 1743  # Install JAX with CUDA 12 support (this should work with your 12.6 toolkit)
+ 1744  pip install --upgrade "jax[cuda12_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+ 1745  pip list | grep jax
+ 1746  # inside the same (mava) env
+ 1747  export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:/usr/local/cuda/lib64:$LD_LIBRARY_PATH"
+ 1748  python - <<'PY'
+ 1749  import jax; print(jax.devices())
+ 1750  PY
+ 1751  pip install -U "jax[cuda12]"
+ 1752  pip install --force-reinstall "jax[cuda12_local]==0.6.0"
+ 1753  python mava/systems/ppo/anakin/ff_ippo.py
+ 1754  # still in the (mava) env
+ 1755  pip uninstall -y jax jaxlib jax-cuda12-plugin jax-cuda12-pjrt
+ 1756  pip install "numpy==1.26.4" "scipy==1.12.0"          # satisfy Mava pins
+ 1757  # all one command – adjust the 12.6.* if you really want 12.8.*, but keep them consistent
+ 1758  pip install --upgrade "jax[cuda12]==0.6.2"   nvidia-cublas-cu12==12.6.*   nvidia-cusparse-cu12==12.6.*   nvidia-cusolver-cu12==12.6.*   nvidia-cudnn-cu12==9.8.*
+ 1759  nividia-smi -l
+ 1760  nvidia-smi -l
+ 1761  cd ../JaxMARL/
+ 1762  conda deactivate
+ 1763  grep -r 'tensorboard'
+ 1764  ls
+ 1765  grep -r 'checkpoint'
+ 1766  grep -r 'tensorboard'
+ 1767  nvidia-smi
+ 1768  nvidia-smi -l
+ 1769  conda env list
+ 1770  conda activate b_marl
+ 1771  cd src/BenchMARL/
+ 1772  ls
+ 1773  nvidia-smi
+ 1774  conda deactivate
+ 1775  cd ../attention/
+ 1776  cd ..
+ 1777  mv BenchMARL/ ~/backup_2025/
+ 1778  nvidia-smi
+ 1779  nvidia-smi -l
+ 1780  cd BenchMARL/
+ 1781  grep -r 'off_policy_n'
+ 1782  nvidia-smi -l
+ 1783  ls
+ 1784  cd ~/Downloads/
+ 1785  ls
+ 1786  mkdir readme
+ 1787  mv *.md readme/
+ 1788  ls
+ 1789  conda env list
+ 1790  cd ../src/JaxMARL/
+ 1791  ls
+ 1792  emacs train.py &
+ 1793  conda activate jaxMARL
+ 1794  conda env list
+ 1795  conda activate jaxMarl
+ 1796  python train.py 
+ 1797  df
+ 1798  cd ../Mava/
+ 1799  ls
+ 1800  find . -name ff_ippo.yaml
+ 1801  cd ../JaxMARL/
+ 1802  ls
+ 1803  python train.py 
+ 1804  python simple.py 
+ 1805  python train.py
+ 1806  emacs train.py &
+ 1807  python train.py
+ 1808  cd src/BenchMARL/
+ 1809  ls
+ 1810  cd ../attention/
+ 1811  conda activate attent
+ 1812  history
+ 1813  conda deactivate
+ 1814  cd ../BenchMARL/
+ 1815  conda activate b_marl
+ 1816  emacs jack_readme.txt &
+ 1817  conda deactivate
+ 1818  cd ..
+ 1819  ls -lsrt
+ 1820  cd MARLlib/
+ 1821  conda env list
+ 1822  conda activate marllib
+ 1823  ls
+ 1824  more jmv_test.py
+ 1825  conda deactivate
+ 1826  conda activate marllib
+ 1827  ls
+ 1828  emacs jmv_test.py &
+ 1829  python jmv_test.py 
+ 1830  pip uninstall torch torchvision torchaudio -y
+ 1831  # For CUDA 12.1 and later (if your drivers are >= 530.x)
+ 1832  pip install torch==2.2.2 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+ 1833  python jmv_test.py 
+ 1834  pip uninstall torch torchvision torchaudio -y
+ 1835  pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+ 1836  pip install --upgrade pip
+ 1837  pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+ 1838  pip3 install torch torchvision torchaudio
+ 1839  python jmv_test.py 
+ 1840  ls
+ 1841  ls -lsrt
+ 1842  cd exp_results/
+ 1843  ls
+ 1844  cd mappo_mlp_simple_spread/
+ 1845  ls
+ 1846  ls -lsrt
+ 1847  ls
+ 1848  cd ..
+ 1849  ls
+ 1850  emacs visual.py &
+ 1851  ls
+ 1852  python visual.py 
+ 1853  ls exp_results/mappo_mlp_simple_spread/MAPPOTrainer_mpe_simple_spread_17a3f_00000_0_2025-06-25_07-11-07/checkpoint_003125/
+ 1854  ls exp_results/mappo_mlp_simple_spread/MAPPOTrainer_mpe_simple_spread_17a3f_00000_0_2025-06-25_07-11-07/checkpoint_003125/checkpoint-3125
+ 1855  python visual.py 
+ 1856  python -c "import ray; print(ray.__version__)"
+ 1857  python visual.py 
+ 1858  more requirements.txt 
+ 1859  python visual.py 
+ 1860  emacs examples/load_and_render_model.py &
+ 1861  ls exp_results/mappo_mlp_simple_spread/
+ 1862  ls exp_results/mappo_mlp_simple_spread/MAPPOTrainer_mpe_simple_spread_17a3f_00000_0_2025-06-25_07-11-07/params.json 
+ 1863  python load_and_render_model.py 
+ 1864  emacs render.py &
+ 1865  python render.py 
+ 1866  pip install numpy==1.20.3  # Match your training environment
+ 1867  conda deactivate
+ 1868  cd ..
+ 1869  conda acitivate b_marl
+ 1870  conda activate b_marl
+ 1871  python
+ 1872  pip freeze > b_marl_requirements.txt
+ 1873  conda deactivate
+ 1874  conda create -name Bmarl python=3.11.13
+ 1875  conda create --name Bmarl python=3.11.13
+ 1876  conda activate Bmarl
+ 1877  pip3 install torchrl
+ 1878  git clone https://github.com/facebookresearch/BenchMARL.git
+ 1879  ls -lsrt
+ 1880  mv b_marl_requirements.txt BenchMARL/
+ 1881  cd BenchMARL/
+ 1882  ls
+ 1883  more b_marl_requirements.txt 
+ 1884  pip install -e BenchMARL
+ 1885  cd ..
+ 1886  pip install -e BenchMARL
+ 1887  pip install vmas
+ 1888  python
+ 1889  python benchmarl/run.py algorithm=mappo task=vmas/balance
+ 1890  cd BenchMARL/
+ 1891  python benchmarl/run.py algorithm=mappo task=vmas/balance
+ 1892  pip install wandb
+ 1893  python benchmarl/run.py algorithm=mappo task=vmas/balance
+ 1894  pip install moviepy
+ 1895  python benchmarl/run.py algorithm=mappo task=vmas/balance
+ 1896  ls
+ 1897  ls outputs/
+ 1898  python benchmarl/run.py algorithm=mappo task=vmas/dispersion  experiment.checkpoint_interval=120000 experiment.checkpoint_at_end=true
+ 1899  emacs benchmarl/conf/task/vmas/dispersion.yaml &
+ 1900  emacs benchmarl/conf/config.yaml &
+ 1901  grep -r 'sampling_device'
+ 1902  emacs benchmarl/conf/task/vmas/dispersion.yaml &
+ 1903  find . -name 'experiment.yaml'
+ 1904  grep -r 'sampling_device'
+ 1905  emacs benchmarl/conf/experiment/base_experiment.yaml &
+ 1906  python benchmarl/run.py algorithm=mappo task=vmas/dispersion    algorithm.entropy_coef=0.02   experiment.max_n_frames=600000
+ 1907  emacs benchmarl/conf/task/vmas/dispersion.yaml &
+ 1908  python benchmarl/run.py algorithm=mappo task=vmas/dispersion  experiment.checkpoint_interval=120000 experiment.checkpoint_at_end=true algorithm.entropy_coef=0.02
+ 1909  python benchmarl/run.py algorithm=mappo task=vmas/dispersion  experiment.checkpoint_interval=120000 experiment.checkpoint_at_end=true algorithm.entropy_coef=0.02 experiment.max_n_frames=60000000
+ 1910  cd src/JaxMARL/
+ 1911  cd baselines/
+ 1912  ls
+ 1913  cd IPPO/
+ 1914  ls
+ 1915  emacs ippo_ff_mpe.py &
+ 1916  cd ..
+ 1917  find . -name 'ippo_ff_mpe.yaml'
+ 1918  eamcs baselines/IPPO/config/ippo_ff_mpe.yaml &
+ 1919  emacs baselines/IPPO/config/ippo_ff_mpe.yaml &
+ 1920  tail train.py
+ 1921  tail -100  train.py
+ 1922  emacs  train.py &
+ 1923  ls -lsrt
+ 1924  python
+ 1925  nvidia-smi
+ 1926  ls -lsrt
+ 1927  cd outputs/
+ 1928  ls
+ 1929  cd 2025-06-2
+ 1930  cd 2025-06-27
+ 1931  ls
+ 1932  ls -lsrt
+ 1933  ls 07-34-19/
+ 1934  ls
+ 1935  cd ..
+ 1936  ls
+ 1937  ls *.gif
+ 1938  ls -lsrt
+ 1939  grep -r 'silent'
+ 1940  cd .
+ 1941  cd ..
+ 1942  ls -lsrt
+ 1943  cd src/
+ 1944  ls
+ 1945  ls -lsrt
+ 1946  cd JaxMARL/
+ 1947  ls
+ 1948  emacs train.py &
+ 1949  conda env list
+ 1950  ls -lsrt ~/miniconda3/envs/
+ 1951  conda activate jaxMarl
+ 1952  ls
+ 1953  python train.py 
+ 1954  emacs simple.py &
+ 1955  python train.py 
+ 1956  grep -r '.gif'
+ 1957  grep -r 'animation.gif'
+ 1958  grep -r --dtype='*.py'  'animation.gif'
+ 1959  man grep
+ 1960  grep -r --include='*.py'  'animation.gif'
+ 1961  python train.py 
+ 1962  ls
+ 1963  mv agents_5v5.gif ~/
+ 1964  python train.py 
+ 1965  cd baselines/IPPO/
+ 1966  python ippo_ff_mpe.py 
+ 1967  cd ..
+ 1968  python ippo_ff_mpe.py 
+ 1969  ls -lsrt
+ 1970  mv ippo_ff_MPE_simple_spread_v3.png ~/
+ 1971  python ippo_ff_mpe.py 
+ 1972  more baselines/IPPO/config/ippo_ff_mpe.yaml
+ 1973  emacs train.py &
+ 1974  python ippo_ff_mpe.py 
+ 1975  ls
+ 1976  python ippo_ff_mpe.py 
+ 1977  ls
+ 1978  rm -rf spread_*.gif
+ 1979  python ippo_ff_mpe.py 
+ 1980  rm -rf spread_*.gif
+ 1981  python ippo_ff_mpe.py 
+ 1982  rm -rf spread_*.gif
+ 1983  python ippo_ff_mpe.py 
+ 1984  ls
+ 1985  python ippo_ff_mpe.py 
+ 1986  ls
+ 1987  python ippo_ff_mpe.py 
+ 1988  ls
+ 1989  ls checkpoints/
+ 1990  cd checkpoints/
+ 1991  ls
+ 1992  pwd
+ 1993  cd ..
+ 1994  ls
+ 1995  python ippo_ff_mpe.py 
+ 1996  cd src/attention/
+ 1997  ls
+ 1998  cd test/
+ 1999  ls
+ 2000  ls -lsrt
+ 2001  emacs test_attention_2.py &
+ 2002  ls
+ 2003  cd ..
+ 2004  ls
+ 2005  ls model_ouput/
+ 2006  ls -lsrt
+ 2007  ls model_output/
+ 2008  cd test/
+ 2009  history > history_06_28.txt

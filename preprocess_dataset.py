@@ -79,7 +79,7 @@ def preprocess_dataset_memmap(
     target_width: int = 320,
     target_height: int = 320,
     yolo_model_path: str = "yolo11n.onnx",
-    stride: int = 1,
+    stride: int = 2, # 2 for gazebo,  1 for SiT
     max_per_sequence: Optional[int] = None,
     debug_image_dir: Optional[str] = None,
     chunk_size: int = 100  # Process in chunks for better memory management

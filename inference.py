@@ -26,7 +26,7 @@ from trajectory_utils import (
 
 # Configuration - must match producer
 H, W = 320, 320            # Frame dimensions
-FPS_HINT = 30              # Expected camera frame rate (approximate)
+FPS_HINT = 30              # Expected gazebo camera frame rate (approximate), not target frame rate.
 SPAN_SEC = 2.0             # Time span to maintain in the buffer
 CAPACITY = 1 << (int(np.ceil(np.log2(FPS_HINT * SPAN_SEC))))  # e.g., 64
 

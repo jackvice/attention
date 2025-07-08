@@ -24,8 +24,9 @@ python run_efficient_training.py --dataset_path /home/jack/data/social_nav --num
 
 
 
-
-
+# Show sizes of all directories in current folder, sorted:
+du -h --max-depth=1 | sort -h
+du -sh ./*
 
 
 

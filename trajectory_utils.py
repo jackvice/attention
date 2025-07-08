@@ -854,8 +854,8 @@ def compute_trajectories(
             future_pedestrians = detect_fn(future_img)
         
         # Skip sequences with no pedestrians in the future frame
-        #if len(future_pedestrians) == 0:
-        #    continue
+        if len(future_pedestrians) == 0:
+            continue
         
         # Track pedestrians across frames
         trajectories = track_pedestrians_simple(

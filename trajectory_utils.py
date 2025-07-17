@@ -107,7 +107,7 @@ def save_debug_observation(
 
 def estimate_depth_pytorch(
     image: np.ndarray,
-    model_path: str = "checkpoints/depth_anything_v2_vits.pth",
+    model_path: str = "models/depth_anything_v2_vits.pth",
     device: str = 'cuda',
     session = None
 ) -> Tuple[np.ndarray, Any]:
@@ -608,22 +608,16 @@ def visualize_and_save_detections(
     cv2.imwrite(output_path, cv2.cvtColor(vis_img, cv2.COLOR_RGB2BGR))
     print(f"Saved visualization to {output_path}")
 
-
-
+    
 def extract_frame_info(file_path: str) -> Optional[Frame]:
     try:
-        p        = Path(file_path)
-        frame_id = int(p.stem)                    # 0.png → 0
-        parts    = p.parts
+        p = Path(file_path)
+        frame_id = int(p.stem)
+        parts = p.parts
 
-        # --- where is cam_img? ---
-        cam_idx   = parts.index("cam_img")        # …/cam_img/<cam-id>/data_rgb/…
-
-        camera_id = parts[cam_idx + 1]            # the “1”, “2”, … directory
-
-        # ***NEW, simpler rule: everything *before* cam_img is the sequence id***
-        #    e.g.  gazebo_001/sequence_015   or   courtyard/courtyard_3
-        sequence_id = "/".join(parts[:cam_idx])
+        data_rgb_idx = parts.index("data_rgb")
+        camera_id = "1"  # Default camera
+        sequence_id = "/".join(parts[:data_rgb_idx])
 
         return Frame(
             path=file_path,
@@ -631,76 +625,13 @@ def extract_frame_info(file_path: str) -> Optional[Frame]:
             sequence_id=sequence_id,
             camera_id=camera_id,
         )
-
-    except (ValueError, IndexError):              # bad frame-number or no cam_img
+    except (ValueError, IndexError):
         logger.warning("Bad file %s", file_path)
         return None
 
-    
-    
-# Dataset utilities
-def extract_frame_info_Old(file_path: str) -> Optional[Frame]:
-    """
-    Extract frame information from file path.
-    
-    Args:
-        file_path: Path to frame image file
-        
-    Returns:
-        Frame object with metadata or None if parsing fails
-    """
-    try:
-        path_obj = Path(file_path)
-        
-        # Extract frame_id from filename (remove extension and convert to int)
-        try:
-            frame_id = int(path_obj.stem)
-        except ValueError:
-            logger.warning(f"Could not parse frame_id from {file_path}")
-            return None
-        
-        # Extract camera_id from parent directory structure
-        # Assuming path like: .../cam_img/1/data_rgb/1.png where 1 is camera_id
-        parts = path_obj.parts
-        cam_idx = -1
-        for i, part in enumerate(parts):
-            if part == "cam_img":
-                cam_idx = i
-                break
-        
-        if cam_idx >= 0 and cam_idx + 1 < len(parts):
-            camera_id = parts[cam_idx + 1]
-        else:
-            camera_id = "unknown"
-        
-        # Extract sequence_id from directory structure
-        # Try to find identifiable sequence markers (outdoor_1, cafe_1, etc.)
-        sequence_markers = [
-            "alley", "outdoor", "cafe", "courtyard", "crossroad", "three_way", "subway",
-            "gazebo_001", "gazebo_002", "gazebo_003", "sequence"
-        ]
-        sequence_id = "unknown"
-        
-        for part in parts:
-            for marker in sequence_markers:
-                if marker in part and any(c.isdigit() for c in part):
-                    sequence_id = part
-                    break
-            if sequence_id != "unknown":
-                break
-        
-        return Frame(
-            path=file_path,
-            frame_id=frame_id,
-            sequence_id=sequence_id,
-            camera_id=camera_id
-        )
-    
-    except Exception as e:
-        logger.error(f"Error parsing frame from {file_path}: {e}")
-        return None
 
 
+    
 def scan_dataset(
     root_path: str, 
     max_per_sequence: Optional[int] = None
@@ -708,8 +639,9 @@ def scan_dataset(
     logger.info(f"Scanning dataset at {root_path}")
     start_time = time.time()
     
-    # Find all PNG files recursively
-    pattern = os.path.join(root_path, "**", "*.png")
+    # Find all PNG files in 'data_rgb' dirs, recursively
+    pattern = os.path.join(root_path, "**", "data_rgb", "*.png")
+    #pattern = os.path.join(root_path, "**", "*.png") # find all
     all_files = glob.glob(pattern, recursive=True)
     logger.info(f"Found {len(all_files)} PNG files")
     

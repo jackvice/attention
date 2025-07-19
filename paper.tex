@@ -1,0 +1,29 @@
+
+\subsection{Motivation and Problem Statement}
+Mobile robots are progressively being deployed beyond controlled indoor spaces to \emph{unstructured} environments such as construction sites, orchards, and disaster zones.  In these settings, robots must operate side-by-side with human workers, heavy machinery, and uneven terrain composed of gravel, mud, and loose rubble.  Achieving \emph{socially compliant navigation}—moving efficiently toward a goal while avoiding unsafe incursions into human work areas—therefore demands reasoning about \emph{both} human intent \emph{and} terrain affordances in real time.  Formally, let $\gamma(t)$ denote a robot trajectory from start $s_{0}$ to goal $g$, and let $\mathcal{H}(t)$ represent the set of predicted human occupancies over the same horizon.  The objective is to find
+\begin{equation}
+\gamma^{*} \;=\; \argmin_{\gamma}
+\;\mathcal{C}_{\text{terrain}}(\gamma)
++\lambda_{1}\,\mathcal{C}_{\text{social}}\bigl(\gamma,\mathcal{H}\bigr)
++\lambda_{2}\,\mathcal{C}_{\text{goal}}(\gamma),
+\label{eq:objective}
+\end{equation}
+subject to the robot’s kinodynamic constraints, where $\mathcal{C}_{\text{terrain}}$ penalises traversing non-drivable ground, $\mathcal{C}_{\text{social}}$ penalises projected interference with humans, and $\mathcal{C}_{\text{goal}}$ rewards task completion.  Solving~\eqref{eq:objective} online in a partially observed, rapidly changing environment remains a fundamental challenge.
+
+\subsection{Limitations of Prior Work}
+Indoor social-navigation planners—ranging from velocity-obstacle variants~\cite{van2011reciprocal} to model-free deep reinforcement learning (DRL) approaches~\cite{everett2021collision}—assume flat, obstacle-sparse floors and well-behaved pedestrian motion.  When transferred outdoors, their Euclidean costmaps ignore slope, soil cohesion, and wheel–ground interaction, often selecting paths that strand the robot on loose gravel or steep inclines.  Conversely, off-road navigation research has produced terrain classifiers~\cite{brooks2023srpa}, height-map planners~\cite{rankin2024vtr}, and world-model RL agents~\cite{zhu2024dreamerv3} that excel at negotiating surface hazards, yet treat humans as static obstacles or omit them entirely.  Human trajectory-forecasting literature offers sophisticated spatiotemporal models~\cite{kosaraju2020social} but seldom integrates their predictions into the feedback loop of robot control.  As a result, no existing framework jointly optimises for human comfort and terrain traversability under on-board computational budgets.
+
+\subsection{Key Insight and Proposed Approach}
+Human workers implicitly reveal safe, task-relevant regions through their walking patterns: they avoid slippery mud, prefer compacted soil over rocks, and choose ramps over ladders.  We leverage this observation by \emph{learning} a \textbf{human traversability prior} with a lightweight spatiotemporal attention network.  Given a short $T$-frame RGB sequence, the network outputs a heat-map that peaks on areas humans are likely to walk on within a \SI{2}{s} horizon.  This soft prior is fused—with depth and grayscale appearance—into a three-channel observation for a model-based Soft Actor–Critic (SAC) agent that also learns a latent world model of the robot’s own dynamics.  The resulting hybrid pipeline (Fig.~\ref{fig:pipeline}) plans socially compliant, terrain-aware trajectories at \SI{10}{Hz}, without requiring hand-crafted costmaps or explicit semantic labels at test time.
+
+\subsection{Contributions}
+This paper makes four primary contributions:
+\begin{enumerate}
+  \item A real-time perception–control framework that couples attention-based human path prediction with model-based RL for outdoor social navigation.
+  \item A compact spatiotemporal attention architecture that operates at \SI{78}{FPS} on an RTX\,3090 and generalises from the SiT dataset to photorealistic Gazebo RoboTerrain simulations.
+  \item A curiosity-driven self-exploration phase that automatically learns robot-terrain interaction dynamics before social navigation commences.
+  \item An extensive empirical study across \num{14} unstructured scenes with dynamic humans and heavy equipment, including comparisons to indoor social-nav baselines, off-road planners, and ablations of each observation component.
+\end{enumerate}
+
+\subsection{Paper Organisation}
+Section~\ref{sec:related} surveys related work on outdoor social navigation, human trajectory prediction, and off-road RL.  Section~\ref{sec:methods} details our methodology, covering dataset preparation, the attention network, SAC formulation, and system integration.  Experimental protocols and quantitative results appear in Section~\ref{sec:experiments}.  Section~\ref{sec:discussion} analyses limitations and future directions, and Section~\ref{sec:conclusion} concludes.

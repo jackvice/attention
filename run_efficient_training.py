@@ -23,7 +23,7 @@ def main():
                         help="Only preprocess the dataset, don't train")
     parser.add_argument("--output_dir", type=str, default="./model_output",
                         help="Output directory for model and results")
-    parser.add_argument("--preprocessed_dir", type=str, default="./preprocessed_data",
+    parser.add_argument("--preprocessed_dir", type=str, default="/home/jack/data/social_nav/preprocessed_data",
                         help="Directory to store preprocessed data")
     parser.add_argument("--num_epochs", type=int, default=30,
                         help="Number of training epochs")

@@ -816,30 +816,35 @@ def create_target_heatmap_from_pedestrians(
     sigma: float = SIGMA_PX
 ) -> np.ndarray:
     """
-    Create a target heatmap from detected pedestrians in future frame.
-    
-    Args:
-        pedestrians: List of pedestrians in future frame
-        target_height: Output height
-        target_width: Output width
-        sigma: Spread parameter for Gaussian
-        
-    Returns:
-        Heatmap of shape [H, W, 1]
+    Create a target heatmap with Gaussians scaled to bounding box size.
     """
     heatmap = np.zeros((target_height, target_width), dtype=np.float32)
     
     for ped in pedestrians:
-        # Use center position of the pedestrian
-        x, y = ped.position.astype(int)
+        # Extract bounding box coordinates and center
+        x1, y1, x2, y2 = ped.bbox.astype(int)
+        center_x, center_y = ped.position.astype(int)
         
-        # Ensure the position is within bounds
-        if 0 <= x < target_width and 0 <= y < target_height:
-            # Add a Gaussian centered at this position
+        # Calculate box dimensions
+        box_width = x2 - x1
+        box_height = y2 - y1
+        
+        # Scale sigma based on bounding box size (optional)
+        sigma_x = max(sigma, box_width / 3.5)  # At least sigma, or 1/4 of box width
+        sigma_y = max(sigma, box_height / 4.0)  # At least sigma, or 1/4 of box height
+        
+        # Ensure the center is within bounds
+        if 0 <= center_x < target_width and 0 <= center_y < target_height:
+            # Create coordinate grids
             y_indices, x_indices = np.mgrid[:target_height, :target_width]
-            gaussian = np.exp(-((x_indices - x)**2 + (y_indices - y)**2) / (2 * sigma**2))
             
-            # Accumulate to the heatmap using maximum to avoid damping overlapping Gaussians
+            # Create elliptical Gaussian scaled to box size
+            gaussian = np.exp(
+                -((x_indices - center_x)**2 / (2 * sigma_x**2) + 
+                  (y_indices - center_y)**2 / (2 * sigma_y**2))
+            )
+            
+            # Accumulate using maximum to avoid damping overlapping Gaussians
             heatmap = np.maximum(heatmap, gaussian)
     
     # Normalize to [0, 1]

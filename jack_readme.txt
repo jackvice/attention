@@ -8,17 +8,22 @@ ros2 launch roverrobotics_gazebo 4wd_rover_gazebo.launch.py
 
 python inference.py --attention_mode ./checkpoints/checkpoint_epoch_
 
-ros2 run teleop_twist_keyboard teleop_twist_keyboard
+
 
 python run_efficient_training.py --dataset_path /home/jack/data/social_nav --num_epochs 1000 --batch_size 4 --sequence_length 5 --target_width 320 --target_height 320 --yolo_model_path models/yolo11n.onnx --embedding_dim 128 --num_heads 4 --resume_checkpoint checkpoints/checkpoint_epoch_2351.pkl 
 
 (sb3) jack@HAL:~/src/RoboTerrain/ros2_ws/src/sb3$ python sb3_SAC.py --mode train --load False --world inspect --vision True
 
 
+
+ros2 run teleop_twist_keyboard teleop_twist_keyboard
+ros2 run rqt_image_view rqt_image_view
+
+
+
 ######################    fixes!!:
 -change publisher to match frame rate of sim not wall clock time.
 -negative reward for pointing toward human or prediction
--make blob for human proportional to the bounding box size
 -continuing training of attention mechanism
 -test LeSTA
 

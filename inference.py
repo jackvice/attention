@@ -110,6 +110,46 @@ def process_with_attention(
         predict_fn: Jitted prediction function from loaded model
         
     Returns:
+        Combined heatmap [H, W, 1] with current positions + predicted trajectories
+    """
+    import jax.numpy as jnp
+    from config_temporal import SIGMA_PX
+    
+    # Get spatial dimensions
+    h, w = batch.rgb_frames.shape[1:3]
+    
+    # Check if last frame has pedestrians
+    if not all_pedestrians or len(all_pedestrians[-1]) == 0:
+        return np.zeros((h, w, 1), dtype=np.float32)
+    
+    # Get predicted heatmap
+    rgb_frames = jnp.array(batch.rgb_frames)
+    mask_frames = jnp.array(batch.mask_frames)
+    predictions = predict_fn(rgb_frames, mask_frames)
+    predicted_heatmap = np.array(predictions[0])
+    
+    # Get current positions heatmap
+    current_heatmap = create_target_heatmap_from_pedestrians(
+        all_pedestrians[-1], h, w, sigma=SIGMA_PX
+    )
+    
+    # Combine: current + predicted
+    return predicted_heatmap + current_heatmap
+    
+def process_with_attention_old(
+    batch: ProcessedBatch,
+    all_pedestrians: List[List[Pedestrian]],
+    predict_fn: callable
+) -> np.ndarray:
+    """
+    Process batch with attention model - only predict if last frame has pedestrians.
+    
+    Args:
+        batch: ProcessedBatch containing RGB and mask frames
+        all_pedestrians: Pedestrian detections for each frame in sequence
+        predict_fn: Jitted prediction function from loaded model
+        
+    Returns:
         Predicted trajectory heatmap [H, W, 1] or zeros if no person in last frame
     """
     import jax.numpy as jnp

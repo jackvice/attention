@@ -3,7 +3,6 @@ import glob
 import struct
 import cv2
 import numpy as np
-import numpy as np
 import jax.numpy as jnp
 import cv2
 import torch
@@ -63,6 +62,35 @@ class ModelConfig(NamedTuple):
     output_width: int = 320 
 
 
+
+def save_fused_channels_as_png(
+    fused_image: np.ndarray,
+    output_dir: str = "./test_out",
+    prefix: str = "fused"
+) -> None:
+    """
+    Save the 3 channels of a fused observation as individual PNG images.
+
+    Args:
+        fused_image: [H, W, 3] array with values in [0, 1]
+        output_dir: Directory to save PNG files
+        prefix: Prefix for filenames
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    if fused_image.shape[2] != 3:
+        raise ValueError(f"Expected fused image with 3 channels, got {fused_image.shape[2]}")
+
+    # Clip and scale to uint8
+    fused_uint8 = (np.clip(fused_image, 0.0, 1.0) * 255).astype(np.uint8)
+
+    # Save each channel
+    channel_names = ["grayscale_with_peds", "attention_heatmap", "depth_map"]
+    for i in range(3):
+        filename = os.path.join(output_dir, f"{prefix}_channel_{i}_{channel_names[i]}.png")
+        cv2.imwrite(filename, fused_uint8[:, :, i])
+
+    
 # trajectory_cache.py
 #from __future__ import annotations
 

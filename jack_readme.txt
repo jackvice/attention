@@ -1,14 +1,18 @@
 ros2 launch roverrobotics_gazebo 4wd_rover_gazebo.launch.py
+ros2 launch roverrobotics_gazebo Leo_rover_gazebo.launch.py
 
+~/src/RoboTerrain/ros2_ws/src$ python ign_ros2_pose_topic.py inspect leo_rover
 ~/src/RoboTerrain/ros2_ws/src$ python ign_ros2_pose_topic.py inspect rover_zero4wd
 
 ~/src/attention/inference$ python ros2_mem_share.py 
 
-~/src/RoboTerrain/ros2_ws/src/dynamic_obstacles$ python spawn.py 
+/dynamic_obstacles$ python spawn.py trajectory_file_name actor_name walk_name world_name
 
 python inference.py --attention_mode ./checkpoints/checkpoint_epoch_
 
 
+
+python run_efficient_training.py --dataset_path /home/jack/data/social_nav --num_epochs 1000 --batch_size 4 --sequence_length 5 --target_width 320 --target_height 320 --yolo_model_path models/yolo11n.onnx --embedding_dim 128 --num_heads 4 --resume_checkpoint checkpoints/checkpoint_epoch
 
 python run_efficient_training.py --dataset_path /home/jack/data/social_nav --num_epochs 1000 --batch_size 4 --sequence_length 5 --target_width 320 --target_height 320 --yolo_model_path models/yolo11n.onnx --embedding_dim 128 --num_heads 4 --resume_checkpoint checkpoints/checkpoint_epoch_2351.pkl 
 

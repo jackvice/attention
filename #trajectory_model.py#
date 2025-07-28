@@ -454,7 +454,11 @@ def train_model(
                     first_batch = next(train_dataset)
                 except StopIteration:
                     break
-            
+            # Add a check for None
+            if first_batch is None:
+                logger.warning("Could not get first batch for debug images")
+                train_dataset = train_dataset_fn()
+                continue
             rgb_batch, mask_batch, target_batch = first_batch
             
             # Get first example from batch

@@ -129,12 +129,12 @@ def process_with_attention(
     predicted_heatmap = np.array(predictions[0])
     
     # Get current positions heatmap
-    current_heatmap = create_target_heatmap_from_pedestrians(
-        all_pedestrians[-1], h, w, sigma=SIGMA_PX
-    )
+    #current_heatmap = create_target_heatmap_from_pedestrians(
+    #    all_pedestrians[-1], h, w, sigma=SIGMA_PX
+    #)
     
     # Combine: current + predicted
-    return predicted_heatmap + current_heatmap
+    return predicted_heatmap #+ current_heatmap don't combine
     
 def process_with_attention_old(
     batch: ProcessedBatch,
@@ -553,7 +553,7 @@ def main():
                     loop_end_time = time.time()
                     total_loop_time = loop_end_time - loop_start_time
                     
-                    if loop_idx % 1000 == 0:
+                    if loop_idx % 100 == 0:
                         save_debug_observation( loop_idx, fused_obs, './debug_png' )
                         print(f"Complete loop cycle: {total_loop_time*1000:.1f}ms at {time.time():.3f}")
                         print(f"Prediction: max={heat_max:.3f}, mean={heat_mean:.3f}, "

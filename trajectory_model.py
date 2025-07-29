@@ -446,7 +446,6 @@ def train_model(
         # Write debug images for the first batch of each epoch
         try:
             # Get first batch
-            #first_batch = next(train_dataset)
             first_batch = None
             debug_index = (epoch // 10) % 10
             for _ in range(debug_index):
@@ -455,44 +454,41 @@ def train_model(
                 except StopIteration:
                     break
             
-            rgb_batch, mask_batch, target_batch = first_batch
+            if first_batch is not None:
+                rgb_batch, mask_batch, target_batch = first_batch
+                
+                # Get first example from batch
+                rgb_frames = rgb_batch[0]  # [T, H, W, 3]
+                mask_frames = mask_batch[0]  # [T, H, W, 1]
+                target_heatmap = target_batch[0]  # [H, W, 1]
+                
+                # Make a prediction using the current model
+                rgb_jax = jnp.array(rgb_frames[np.newaxis])  # Add batch dimension
+                mask_jax = jnp.array(mask_frames[np.newaxis])  # Add batch dimension
+                prediction = state.apply_fn({'params': state.params}, rgb_jax, mask_jax, training=False)
+                prediction_np = np.array(prediction[0])  # Remove batch dimension
+                
+                if debug_image_dir and (epoch + 1) % 10 == 0:
+                    write_debug_images(
+                        rgb_frames, 
+                        mask_frames,
+                        prediction_np,
+                        epoch + 1,
+                        output_dir=debug_image_dir,
+                        target_heatmap=target_heatmap,
+                    )
+            else:
+                logger.warning(f"Could not get batch {debug_index} for debug images at epoch {epoch}")
             
-            # Get first example from batch
-            rgb_frames = rgb_batch[0]  # [T, H, W, 3]
-            mask_frames = mask_batch[0]  # [T, H, W, 1]
-            target_heatmap = target_batch[0]  # [H, W, 1]
-            
-            # Make a prediction using the current model
-            rgb_jax = jnp.array(rgb_frames[np.newaxis])  # Add batch dimension
-            mask_jax = jnp.array(mask_frames[np.newaxis])  # Add batch dimension
-            prediction = state.apply_fn({'params': state.params}, rgb_jax, mask_jax, training=False)
-            prediction_np = np.array(prediction[0])  # Remove batch dimension
-            
-            # For visualization, we'll need to load a future frame
-            # Since our NPZ file doesn't store the future frame directly, we'll need to use
-            # the target heatmap for visualization or reload from the original dataset
-    
-            if debug_image_dir and (epoch +1) % 10 == 0:
-                # In train_model function, modify the debug visualization call:
-                write_debug_images(
-                    rgb_frames, 
-                    mask_frames,
-                    prediction_np,
-                    epoch + 1,
-                    output_dir=debug_image_dir,
-                    target_heatmap=target_heatmap,
-                    #dataset_path=dataset_path,  # You need to pass this from train_trajectory_model_efficient
-                    #frame_index=0,  # Index of the first frame in the batch
-                    #yolo_model_path=yolo_model_path  # Also need to pass this from train_trajectory_model_efficient
-                )
-            
-            # Recreate the training dataset since we consumed one batch
+            # Always recreate the training dataset for actual training
             train_dataset = train_dataset_fn()
-        except StopIteration:
-            logger.warning("Training dataset empty, cannot write debug images")
+            
+        except Exception as e:
+            logger.warning(f"Error creating debug images: {e}")
+            # Recreate dataset in case of any error
             train_dataset = train_dataset_fn()
         
-        # Continue with normal training
+        # Continue with normal training - this should always happen!
         for step in range(steps_per_epoch):
             try:
                 # Get next batch
@@ -504,28 +500,15 @@ def train_model(
                 # Perform training step
                 rng, step_rng = random.split(rng)
                 state, metrics, rng = train_step(state, rgb_jax, mask_jax, target_jax, step_rng)
-                # Add debug code here
-                if step % 50 == 0:
-                    # Get predictions
-                    predictions = state.apply_fn(
-                        {'params': state.params},
-                        rgb_jax, mask_jax,
-                        training=False
-                    )
-                    # Calculate variance along x and y axes
-                    """
-                    pred = np.array(predictions[0, ..., 0])  # [H,W]
-                    print(f"Epoch {epoch+1}, Step {step}")
-                    print("σ_x:", pred.var(axis=1).mean(), "σ_y:", pred.var(axis=0).mean())
-                    tgt = np.array(target_jax[0, ..., 0])
-                    print("tgt σ_x:", tgt.var(axis=1).mean(), "tgt σ_y:", tgt.var(axis=0).mean())
-                    """
+                
                 # Record metrics
                 train_losses.append(float(metrics.loss))
-                train_rmses.append(float(metrics.rmse))                
+                train_rmses.append(float(metrics.rmse))
+                
             except StopIteration:
                 logger.warning("Training dataset exhausted before completing epoch")
                 break
+        
         
         # Calculate epoch metrics
         epoch_loss = np.mean(train_losses) if train_losses else np.nan

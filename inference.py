@@ -11,6 +11,9 @@ from multiprocessing import shared_memory
 import argparse
 from typing import List, Tuple, Optional, Dict, Any, NamedTuple
 import onnxruntime as ort
+import time, torch, nvtx, jax
+
+
 
 import struct
 # Import existing utilities
@@ -491,6 +494,8 @@ def main():
                 start_time = time.time()
                 heatmap = process_with_attention(batch, predict_fn)
             """
+            t0 = time.perf_counter_ns()
+            
             batch, all_pedestrians = process_buffer(
                 yolo_session=yolo_session,
                 frames=frames_array,
@@ -499,12 +504,14 @@ def main():
                 num_frames=args.frames,
                 span=args.span
             )
-            
+            t1 = time.perf_counter_ns()
             if batch is not None:
                 # Process with attention model (now with detection gating)
                 start_time = time.time()
                 heatmap = process_with_attention(batch, all_pedestrians, predict_fn)
-           
+
+                t2 = time.perf_counter_ns()
+                
                 inference_time = time.time() - start_time
                 
                 # Calculate some statistics for debugging
@@ -526,13 +533,14 @@ def main():
                     latest_frame_idx = (cursor[0] - 1) & (CAPACITY - 1)
                     latest_rgb = frames_array[latest_frame_idx].astype(np.float32) / 255.0
                     # Get depth for latest frame
+                    t3 = time.perf_counter_ns()
                     depth_image, depth_session = estimate_depth_pytorch(
                         latest_rgb, 
                         session=depth_session
                     )
                     # Convert heatmap to JAX array
                     heatmap_jax = jnp.array(heatmap)  # [H, W, 1]
-                    
+                    t4 = time.perf_counter_ns()
                     # Create fused observation
                     fused_obs = create_fused_observation_jax(
                         rgb=latest_rgb,
@@ -542,7 +550,7 @@ def main():
                         target_height=rl_obs_height,
                         target_width=rl_obs_width
                     )
-                    
+                    t5 = time.perf_counter_ns()
                     # Convert to numpy for shared memory
                     fused_obs_np = np.array(fused_obs).astype(np.float32)
                     
@@ -553,12 +561,13 @@ def main():
                     loop_end_time = time.time()
                     total_loop_time = loop_end_time - loop_start_time
                     
-                    if loop_idx % 100 == 0:
+                    if loop_idx % 300 == 0:
                         save_debug_observation( loop_idx, fused_obs, './debug_png' )
-                        print(f"Complete loop cycle: {total_loop_time*1000:.1f}ms at {time.time():.3f}")
-                        print(f"Prediction: max={heat_max:.3f}, mean={heat_mean:.3f}, "
-                              f"coverage={heat_nonzero:.1%}, time={inference_time*1000:.1f}ms")
-                
+                        #print(f"Complete loop cycle: {total_loop_time*1000:.1f}ms at {time.time():.3f}")
+                        #print(f"Prediction: max={heat_max:.3f}, mean={heat_mean:.3f}, "
+                        #      f"coverage={heat_nonzero:.1%}, time={inference_time*1000:.1f}ms")
+                        print(f"timings_ms | yolo={(t1-t0)//1_000_000} | attn={(t2-t1)//1_000_000} | depth={(t4-t3)//1_000_000} | fuse={(t5-t4)//1_000_000} | total={(t5-t0)//1_000_000}")
+
                     
         
                 except Exception as e:

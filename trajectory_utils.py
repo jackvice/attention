@@ -62,7 +62,75 @@ class ModelConfig(NamedTuple):
     output_width: int = 320 
 
 
+from concurrent.futures import ThreadPoolExecutor, Future, TimeoutError as FutureTimeoutError
+from typing import Optional, Tuple, Any
+import time
 
+def submit_depth_estimation(
+    executor: ThreadPoolExecutor,
+    rgb_frame: np.ndarray,
+    depth_session: Any
+) -> Future[Tuple[np.ndarray, Any]]:
+    """
+    Submit depth estimation task to thread pool executor.
+    
+    Args:
+        executor: ThreadPoolExecutor instance
+        rgb_frame: RGB image [H,W,3] with values in [0,1]  
+        depth_session: Cached depth model session
+        
+    Returns:
+        Future object for the depth estimation task
+    """
+    return executor.submit(estimate_depth_pytorch, rgb_frame, session=depth_session)
+
+
+def wait_for_depth_result(
+    depth_future: Future[Tuple[np.ndarray, Any]],
+    timeout_seconds: float = 1.0
+) -> Tuple[Optional[np.ndarray], Any]:
+    """
+    Wait for depth estimation to complete and return result.
+    
+    Args:
+        depth_future: Future object from submit_depth_estimation
+        timeout_seconds: Maximum time to wait for completion
+        
+    Returns:
+        Tuple of (depth_image, depth_session) or (None, session) if timeout/error
+    """
+    try:
+        depth_image, depth_session = depth_future.result(timeout=timeout_seconds)
+        return depth_image, depth_session
+    except FutureTimeoutError:
+        print(f"Warning: Depth estimation timed out after {timeout_seconds}s")
+        return None, None
+    except Exception as e:
+        print(f"Error in depth estimation: {e}")
+        return None, None
+
+
+def get_latest_rgb_frame(
+    frames_array: np.ndarray,
+    cursor: np.ndarray,
+    capacity: int
+) -> np.ndarray:
+    """
+    Extract the latest RGB frame from the circular buffer.
+    
+    Args:
+        frames_array: Shared memory frames array
+        cursor: Current write position
+        capacity: Buffer capacity
+        
+    Returns:
+        Latest RGB frame as float32 [H,W,3] in [0,1] range
+    """
+    latest_frame_idx = (cursor[0] - 1) & (capacity - 1)
+    return frames_array[latest_frame_idx].astype(np.float32) / 255.0
+
+
+    
 # trajectory_cache.py
 #from __future__ import annotations
 

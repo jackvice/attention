@@ -12,7 +12,7 @@ import argparse
 from typing import List, Tuple, Optional, Dict, Any, NamedTuple
 import onnxruntime as ort
 import time, torch, nvtx, jax
-
+from concurrent.futures import ThreadPoolExecutor
 
 
 import struct
@@ -24,7 +24,10 @@ from trajectory_utils import (
     create_fused_observation_jax,
     write_observation_to_shm,
     estimate_depth_pytorch,
-    save_debug_observation
+    save_debug_observation,
+    get_latest_rgb_frame,
+    wait_for_depth_result,
+    submit_depth_estimation
 )
 
 # Configuration - must match producer
@@ -468,34 +471,29 @@ def main():
             size=rl_obs_shm_size,
             name=args.rl_obs_name
         )
-        print(f"Created RL observation shared memory: {args.rl_obs_name} ({rl_obs_shm_size} bytes)")
+
+        # CREATE THREAD POOL EXECUTOR FOR DEPTH ESTIMATION
+        depth_executor = ThreadPoolExecutor(
+            max_workers=1, 
+            thread_name_prefix="depth_worker"
+        )
+        print("Created ThreadPoolExecutor for depth estimation")
         
         # Main processing loop
         depth_session = None
-        
         loop_idx = 0        
+        
         while True:
             loop_idx += 1
             loop_start_time = time.time()
             
-            # Process buffer and get batch for attention model
-            """
-            batch = process_buffer(
-                yolo_session=yolo_session,
-                frames=frames_array,
-                timestamps=timestamps,
-                cursor=cursor,
-                num_frames=args.frames,
-                span=args.span
-            )
+            # STEP 1: Extract RGB frame and start depth estimation IMMEDIATELY
+            latest_rgb = get_latest_rgb_frame(frames_array, cursor, CAPACITY)
+            depth_future = submit_depth_estimation(depth_executor, latest_rgb, depth_session)
             
-            if batch is not None:
-                # Process with attention model
-                start_time = time.time()
-                heatmap = process_with_attention(batch, predict_fn)
-            """
             t0 = time.perf_counter_ns()
             
+            # STEP 2: Process YOLO (runs concurrently with depth estimation)
             batch, all_pedestrians = process_buffer(
                 yolo_session=yolo_session,
                 frames=frames_array,
@@ -505,71 +503,54 @@ def main():
                 span=args.span
             )
             t1 = time.perf_counter_ns()
+            
             if batch is not None:
-                # Process with attention model (now with detection gating)
-                start_time = time.time()
+                # STEP 3: Process attention (very fast, still concurrent with depth)
                 heatmap = process_with_attention(batch, all_pedestrians, predict_fn)
-
                 t2 = time.perf_counter_ns()
                 
-                inference_time = time.time() - start_time
+                # STEP 4: Wait for depth to complete (should be done or nearly done)
+                t3 = time.perf_counter_ns()
+                depth_image, new_depth_session = wait_for_depth_result(
+                    depth_future, 
+                    timeout_seconds=0.1  # Short timeout since it should be nearly done
+                )
                 
-                # Calculate some statistics for debugging
-                heat_max = np.max(heatmap)
-                heat_mean = np.mean(heatmap)
-                heat_nonzero = np.mean(heatmap > 0.1)
+                # Update session only if depth succeeded
+                if new_depth_session is not None:
+                    depth_session = new_depth_session
                 
-                # Create fused observation for RL agent
+                if depth_image is None:
+                    depth_image = np.zeros(latest_rgb.shape[:2], dtype=np.float32)
+                    print("Warning: Using fallback zero depth image")
+                
+                t4 = time.perf_counter_ns()
+                
+                # STEP 5: Create fused observation (both dependencies ready)
                 try:
                     import jax.numpy as jnp
-                    #from rl_observation_functions import create_fused_observation_jax
                     
-                    # Get latest RGB frame and mask frame
-                    latest_rgb = jnp.array(batch.rgb_frames[-1])  # [H, W, 3]
-                    latest_mask = jnp.array(batch.mask_frames[-1])  # [H, W, 1]
+                    latest_mask = jnp.array(batch.mask_frames[-1])
+                    heatmap_jax = jnp.array(heatmap)
                     
-                    # Create zero depth frame (placeholder)
-                    #depth_frame = jnp.zeros(latest_rgb.shape[:2], dtype=jnp.float32)  # [H, W]
-                    latest_frame_idx = (cursor[0] - 1) & (CAPACITY - 1)
-                    latest_rgb = frames_array[latest_frame_idx].astype(np.float32) / 255.0
-                    # Get depth for latest frame
-                    t3 = time.perf_counter_ns()
-                    depth_image, depth_session = estimate_depth_pytorch(
-                        latest_rgb, 
-                        session=depth_session
-                    )
-                    # Convert heatmap to JAX array
-                    heatmap_jax = jnp.array(heatmap)  # [H, W, 1]
-                    t4 = time.perf_counter_ns()
-                    # Create fused observation
+                    t5 = time.perf_counter_ns()
+                    
                     fused_obs = create_fused_observation_jax(
                         rgb=latest_rgb,
-                        depth=jnp.array(depth_image), #depth_frame,
+                        depth=jnp.array(depth_image),
                         heatmap=heatmap_jax,
                         pedestrian_masks=latest_mask,
                         target_height=rl_obs_height,
                         target_width=rl_obs_width
                     )
-                    t5 = time.perf_counter_ns()
-                    # Convert to numpy for shared memory
-                    fused_obs_np = np.array(fused_obs).astype(np.float32)
                     
-                    # Write to shared memory
+                    fused_obs_np = np.array(fused_obs).astype(np.float32)
                     write_observation_to_shm(fused_obs_np, rl_obs_shm)
                     
-                    #print(f"Created and wrote RL observation {fused_obs_np.shape} to shared memory")
-                    loop_end_time = time.time()
-                    total_loop_time = loop_end_time - loop_start_time
-                    
                     if loop_idx % 300 == 0:
-                        save_debug_observation( loop_idx, fused_obs, './debug_png' )
-                        #print(f"Complete loop cycle: {total_loop_time*1000:.1f}ms at {time.time():.3f}")
-                        #print(f"Prediction: max={heat_max:.3f}, mean={heat_mean:.3f}, "
-                        #      f"coverage={heat_nonzero:.1%}, time={inference_time*1000:.1f}ms")
-                        print(f"timings_ms | yolo={(t1-t0)//1_000_000} | attn={(t2-t1)//1_000_000} | depth={(t4-t3)//1_000_000} | fuse={(t5-t4)//1_000_000} | total={(t5-t0)//1_000_000}")
-
-                    
-        
+                        save_debug_observation(loop_idx, fused_obs, './debug_png')
+                        print(f"timings_ms | yolo={(t1-t0)//1_000_000} | attn={(t2-t1)//1_000_000} | depth_wait={(t4-t3)//1_000_000} | fuse={(t5-t4)//1_000_000} | total={(t5-t0)//1_000_000}")
+                
                 except Exception as e:
                     print(f"Error creating RL observation: {e}")
                     import traceback
@@ -577,12 +558,13 @@ def main():
                 
             else:
                 print("Not enough frames available yet")
+                depth_future.cancel()  # Cancel depth if no batch to process
             
             # Wait before next processing
             last_cursor_pos = cursor[0]
             while cursor[0] == last_cursor_pos:
-                time.sleep(0.001)  # 1ms polling
-    
+                time.sleep(0.001)
+        
     except KeyboardInterrupt:
         print("Processor stopped by user")
     #except FileNotFoundError:
@@ -593,6 +575,12 @@ def main():
         traceback.print_exc()
     finally:
         # Clean up resources
+        try:
+            depth_executor.shutdown(wait=True, timeout=2.0)
+            print("Shut down ThreadPoolExecutor")
+        except:
+            pass
+        
         try:
             shm_frames.close()
             shm_meta.close()

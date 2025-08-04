@@ -110,26 +110,6 @@ def wait_for_depth_result(
         return None, None
 
 
-def get_latest_rgb_frame(
-    frames_array: np.ndarray,
-    cursor: np.ndarray,
-    capacity: int
-) -> np.ndarray:
-    """
-    Extract the latest RGB frame from the circular buffer.
-    
-    Args:
-        frames_array: Shared memory frames array
-        cursor: Current write position
-        capacity: Buffer capacity
-        
-    Returns:
-        Latest RGB frame as float32 [H,W,3] in [0,1] range
-    """
-    latest_frame_idx = (cursor[0] - 1) & (capacity - 1)
-    return frames_array[latest_frame_idx].astype(np.float32) / 255.0
-
-
     
 # trajectory_cache.py
 #from __future__ import annotations

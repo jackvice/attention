@@ -13,6 +13,8 @@ from typing import List, Tuple, Optional, Dict, Any, NamedTuple
 import onnxruntime as ort
 import time, torch, nvtx, jax
 from concurrent.futures import ThreadPoolExecutor
+from collections import deque
+import struct
 
 
 import struct
@@ -25,23 +27,104 @@ from trajectory_utils import (
     write_observation_to_shm,
     estimate_depth_pytorch,
     save_debug_observation,
-    get_latest_rgb_frame,
     wait_for_depth_result,
     submit_depth_estimation
 )
 
-# Configuration - must match producer
-H, W = 320, 320            # Frame dimensions
-FPS_HINT = 30              # Expected gazebo camera frame rate (approximate), not target frame rate.
-SPAN_SEC = 2.0             # Time span to maintain in the buffer
-CAPACITY = 1 << (int(np.ceil(np.log2(FPS_HINT * SPAN_SEC))))  # e.g., 64
+
 
 # Shared memory names - must match producer
 SHM_IMG = "fifo_frames"
 SHM_META = "fifo_meta"
+SHM_NAME = "camera_latest"
+
+
+
+# Configuration - must match new single-slot approach
+H, W = 320, 320
+BUFFER_SIZE = 60
+SAMPLE_OFFSETS = [0, 15, 30, 45, 59]
+
 
 # Default YOLO model path
 DEFAULT_YOLO_PATH = "/home/jack/src/attention/models/yolo11n.onnx"
+
+
+def attach_single_frame_memory(shm_name: str = SHM_NAME) -> shared_memory.SharedMemory:
+    """
+    Attach to single-slot shared memory.
+    
+    Returns:
+        SharedMemory object
+        
+    Raises:
+        SystemExit: If shared memory not found
+    """
+    try:
+        return shared_memory.SharedMemory(name=shm_name, track=False)
+    except FileNotFoundError:
+        print(f"Error: Shared memory '{shm_name}' not found. Is producer running?")
+        sys.exit(1)
+
+def read_latest_frame_if_new(
+    shm: shared_memory.SharedMemory,
+    last_timestamp: float
+) -> Tuple[Optional[np.ndarray], float]:
+    """
+    Read frame from shared memory if timestamp is newer.
+    
+    Args:
+        shm: Shared memory object
+        last_timestamp: Last seen timestamp
+        
+    Returns:
+        Tuple of (frame_array or None, current_timestamp)
+    """
+    # Read timestamp
+    current_timestamp = struct.unpack_from('<d', shm.buf, 0)[0]
+    
+    # Check if frame is new
+    if current_timestamp <= last_timestamp:
+        return None, current_timestamp
+    
+    # Read frame data
+    frame_bytes = bytes(shm.buf[8:8 + H*W*3])
+    frame = np.frombuffer(frame_bytes, dtype=np.uint8).reshape((H, W, 3))
+    frame_float = frame.astype(np.float32) / 255.0
+    
+    return frame_float, current_timestamp
+
+
+def sample_frames_from_buffer(
+    frame_buffer: deque,
+    sample_offsets: List[int] = SAMPLE_OFFSETS
+) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    """
+    Sample frames at fixed offsets from newest.
+    
+    Args:
+        frame_buffer: Buffer of (frame, timestamp) tuples
+        sample_offsets: Indices to sample [0, 15, 30, 45, 59]
+        
+    Returns:
+        Tuple of (sampled_frames, sampled_timestamps) or None if buffer not full
+    """
+    if len(frame_buffer) < max(sample_offsets) + 1:
+        return None
+    
+    # Convert deque to list for indexing
+    buffer_list = list(frame_buffer)
+    
+    sampled_frames = []
+    sampled_timestamps = []
+    
+    for offset in sample_offsets:
+        frame, timestamp = buffer_list[offset]
+        sampled_frames.append(frame)
+        sampled_timestamps.append(timestamp)
+    
+    return np.array(sampled_frames), np.array(sampled_timestamps)
+
 
 
 def load_attention_model(
@@ -174,149 +257,7 @@ def process_with_attention_old(
     return np.array(predictions[0])
 
 
-def process_buffer(
-    yolo_session: ort.InferenceSession,
-    frames: np.ndarray,
-    timestamps: np.ndarray,
-    cursor: np.ndarray,
-    num_frames: int = 5,
-    span: float = 2.0
-) -> Tuple[Optional[ProcessedBatch], List[List[Pedestrian]]]:
-    """
-    Process buffer - UPDATED to return pedestrian data for detection gating.
-    
-    Returns:
-        Tuple of (ProcessedBatch, all_pedestrians_list) or (None, [])
-    """
-    # Sample frames evenly across the buffer
-    sampled_frames, sampled_timestamps = sample_frames_evenly(
-        frames=frames,
-        stamps=timestamps,
-        cursor=cursor,
-        num_frames=num_frames,
-        span=span
-    )
-    
-    if sampled_frames is None:
-        return None, []
-    
-    # Detect pedestrians in each frame
-    rgb_frames, all_pedestrians = process_frames_with_yolo(
-        frames=sampled_frames,
-        yolo_session=yolo_session
-    )
-    
-    # Create binary mask frames (now with center boxes)
-    mask_frames = create_mask_frames(
-        frames=rgb_frames,
-        pedestrians_list=all_pedestrians
-    )
-    
-    batch = ProcessedBatch(
-        rgb_frames=rgb_frames,
-        mask_frames=mask_frames,
-        timestamps=sampled_timestamps
-    )
-    
-    return batch, all_pedestrians
 
-
-def attach_blocks(
-    frames_name: str = SHM_IMG,
-    meta_name: str = SHM_META
-) -> Tuple[shared_memory.SharedMemory, shared_memory.SharedMemory, np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Attach to shared memory blocks and create numpy views.
-    Keep these open for the lifetime of the program.
-
-    Args:
-        frames_name: Name of frames shared memory block
-        meta_name: Name of metadata shared memory block
-
-    Returns:
-        Tuple of (frames_shm, meta_shm, frames_array, timestamps_array, cursor_array)
-    """
-    try:
-        # Prevent Python's resource_tracker from unlinking on crash
-        shm_frames = shared_memory.SharedMemory(name=frames_name, track=False)
-        shm_meta   = shared_memory.SharedMemory(name=meta_name,   track=False)
-
-        frames_array = np.ndarray(
-            (CAPACITY, H, W, 3), dtype=np.uint8, buffer=shm_frames.buf
-        )
-
-        timestamps = np.ndarray(
-            (CAPACITY,), dtype=np.float64, buffer=shm_meta.buf[:CAPACITY * 8]
-        )
-
-        cursor = np.ndarray(
-            (1,), dtype=np.uint32, buffer=shm_meta.buf[CAPACITY * 8:]
-        )
-
-        return shm_frames, shm_meta, frames_array, timestamps, cursor
-
-    except FileNotFoundError as e:
-        print(f"Error: Could not find shared memory block: {e}, SHM_IMG: {frames_name}, SHM_META: {meta_name}")
-        try:
-            import os
-            if os.path.exists("/dev/shm"):
-                print("Available shared memory segments:")
-                for f in os.listdir("/dev/shm"):
-                    print(f"  - {f}")
-        except:
-            pass
-        raise
-
-
-def sample_frames_evenly(
-    frames: np.ndarray,
-    stamps: np.ndarray,
-    cursor: np.ndarray,
-    num_frames: int = 5,
-    span: float = 2.0
-) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-    """
-    Sample num_frames evenly spaced frames from the most recent frames within time span.
-    
-    Args:
-        frames: Numpy array of all frames (from shared memory)
-        stamps: Numpy array of timestamps (from shared memory)
-        cursor: Numpy array with current write position (from shared memory)
-        num_frames: Number of frames to retrieve
-        span: Time span to sample from (seconds)
-        
-    Returns:
-        Tuple of (sampled frames, sampled timestamps),
-        or (None, None) if not enough frames are available
-    """
-    write_pos = int(cursor[0])
-    now = time.time()
-    
-    # Collect indices of frames within time span
-    indices = []
-    for off in range(1, CAPACITY + 1):
-        i = (write_pos - off) & (CAPACITY - 1)
-        if now - stamps[i] > span:  # Too old
-            break
-        indices.append(i)
-    
-    # Check if we have enough frames
-    if len(indices) < num_frames:
-        return None, None
-    
-    # Select evenly spaced indices
-    sel = np.linspace(0, len(indices) - 1, num=num_frames, dtype=int)
-    
-    # Extract and normalize frames
-    selected_indices = np.array(indices)[sel]
-    sampled_frames = frames[selected_indices].astype(np.float32) / 255.0  # (K, H, W, 3)
-    sampled_timestamps = stamps[selected_indices]
-    
-    newest_time = stamps[indices[0]]
-    oldest_time = stamps[indices[sel[-1]]]
-    #print(f"Retrieved {num_frames} frames spanning {newest_time - oldest_time:.2f}s")
-    
-    return sampled_frames, sampled_timestamps
 
 
 def process_frames_with_yolo(
@@ -375,24 +316,198 @@ def create_mask_frames(
     return mask_frames
 
 
-def wait_for_blocks(frames_name="fifo_frames",
-                    meta_name="fifo_meta",
-                    timeout=5.0,  # total seconds to wait
-                    delay=0.1):   # seconds between tries
-    import time, os
-    t0 = time.time()
-    while True:
-        try:
-            return attach_blocks(frames_name, meta_name)
-        except FileNotFoundError:
-            if time.time() - t0 > timeout:
-                raise RuntimeError(
-                    f"Timed out after {timeout}s – segments never appeared")
-            time.sleep(delay)
-
-
-
 def main():
+    """Main function with single-slot shared memory approach."""
+    parser = argparse.ArgumentParser(description="Process frames with YOLO and predict trajectories")
+    parser.add_argument("--yolo_model", type=str, default=DEFAULT_YOLO_PATH, 
+                      help=f"Path to YOLO ONNX model (default: {DEFAULT_YOLO_PATH})")
+    parser.add_argument("--attention_model", type=str, required=True,
+                      help="Path to attention model checkpoint file")
+    parser.add_argument("--rl-obs-name", type=str, default="rl_observation",
+                      help="Name of RL observation shared memory (default: rl_observation)")
+    
+    args = parser.parse_args()
+    
+    print(f"Trajectory prediction pipeline starting...")
+    print(f"Using YOLO model: {args.yolo_model}")
+    print(f"Using attention model: {args.attention_model}")
+    print(f"Sampling frames at offsets: {SAMPLE_OFFSETS}")
+    
+    # RL observation parameters
+    rl_obs_height, rl_obs_width = 96, 96
+    rl_obs_channels = 3
+
+    try:
+        # Load YOLO model
+        yolo_session = ort.InferenceSession(
+            args.yolo_model,
+            providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
+        )
+        print("Successfully loaded YOLO model")
+        
+        # Load attention model
+        predict_fn, model_info = load_attention_model(args.attention_model)
+        print(f"Successfully loaded attention model")
+
+        # Attach to shared memory
+        shm = attach_single_frame_memory()
+        print("Successfully attached to shared memory")
+        
+        # Setup RL observation shared memory
+        try:
+            shared_memory.SharedMemory(name=args.rl_obs_name).unlink()
+        except FileNotFoundError:
+            pass
+        
+        header_size = 8 + 4  # timestamp + valid flag
+        obs_data_size = rl_obs_height * rl_obs_width * rl_obs_channels * 4  # float32
+        rl_obs_shm_size = header_size + obs_data_size
+        
+        rl_obs_shm = shared_memory.SharedMemory(
+            create=True,
+            size=rl_obs_shm_size,
+            name=args.rl_obs_name
+        )
+
+        # Create thread pool for depth estimation
+        depth_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="depth_worker")
+        print("Created ThreadPoolExecutor for depth estimation")
+        
+        # Initialize state
+        frame_buffer = deque(maxlen=BUFFER_SIZE)
+        last_timestamp = 0.0
+        depth_session = None
+        loop_idx = 0
+        
+        print("Waiting for frames...")
+        
+        # Main processing loop
+        while True:
+            loop_idx += 1
+            t0 = time.perf_counter_ns()
+            # Wait for a new frame to arrive
+            while True:
+                new_frame, current_timestamp = read_latest_frame_if_new(shm, last_timestamp)
+                if new_frame is not None:
+                    break
+                time.sleep(0.0001)  # Short sleep while waiting for new frame
+            t1 = time.perf_counter_ns()
+            # Add to buffer (deque modifies in-place)
+            frame_buffer.appendleft((new_frame, current_timestamp))
+            last_timestamp = current_timestamp
+            
+            # Try to sample frames
+            sample_result = sample_frames_from_buffer(frame_buffer)
+            t2 = time.perf_counter_ns()
+            if sample_result is not None:
+                sampled_frames, sampled_timestamps = sample_result
+                
+                # Start depth estimation on latest frame
+                latest_rgb = sampled_frames[0]  # First frame is newest
+                depth_future = submit_depth_estimation(depth_executor, latest_rgb, depth_session)
+
+                t3 = time.perf_counter_ns()
+                
+                # Process with YOLO
+                all_pedestrians = []
+                for frame in sampled_frames:
+                    pedestrians, yolo_session = detect_pedestrians_yolo_onnx(frame, session=yolo_session)
+                    all_pedestrians.append(pedestrians)
+
+                t4 = time.perf_counter_ns()
+                    
+                # Create mask frames
+                mask_frames = np.zeros((len(sampled_frames), H, W, 1), dtype=np.float32)
+                for i, pedestrians in enumerate(all_pedestrians):
+                    if pedestrians:
+                        mask_frames[i] = create_masks_from_pedestrians(pedestrians, H, W)
+                t5 = time.perf_counter_ns()
+                
+                # Process with attention
+                batch = ProcessedBatch(
+                    rgb_frames=sampled_frames,
+                    mask_frames=mask_frames,
+                    timestamps=sampled_timestamps
+                )
+                heatmap = process_with_attention(batch, all_pedestrians, predict_fn)
+
+                t6 = time.perf_counter_ns()
+
+                # Wait for depth
+                depth_image, new_depth_session = wait_for_depth_result(depth_future, timeout_seconds=0.1)
+                if new_depth_session is not None:
+                    depth_session = new_depth_session
+                if depth_image is None:
+                    depth_image = np.zeros(latest_rgb.shape[:2], dtype=np.float32)
+
+                t7 = time.perf_counter_ns()
+
+                # Create fused observation
+                try:
+                    import jax.numpy as jnp
+                    latest_mask = jnp.array(mask_frames[0])  # Newest frame mask
+                    heatmap_jax = jnp.array(heatmap)
+                    
+                    fused_obs = create_fused_observation_jax(
+                        rgb=latest_rgb,
+                        depth=jnp.array(depth_image),
+                        heatmap=heatmap_jax,
+                        pedestrian_masks=latest_mask,
+                        target_height=rl_obs_height,
+                        target_width=rl_obs_width
+                    )
+                    
+                    fused_obs_np = np.array(fused_obs).astype(np.float32)
+                    write_observation_to_shm(fused_obs_np, rl_obs_shm)
+
+                    t8 = time.perf_counter_ns()
+
+                        
+                except Exception as e:
+                    print(f"Error creating RL observation: {e}")
+            
+            else:
+                # Buffer not full yet
+                if loop_idx % 100 == 0:
+                    print(f"Buffer filling: {len(frame_buffer)}/{BUFFER_SIZE}")
+
+            t9 = time.perf_counter_ns()
+
+            if loop_idx % 500 == 0:
+                #save_debug_observation(loop_idx, fused_obs, './debug_png')
+                #print(f"in_ms | get_frames={(t1-t0)//1_000_000} | t2={(t2-t1)//1_000_000} | t3={(t3-t2)//1_000_000}")
+                #print(f"yolo={(t4-t3)//1_000_000} | t5={(t5-t4)//1_000_000} | t6={(t6-t5)//1_000_000}")
+                #print(f"depth={(t7-t6)//1_000_000} | t8={(t8-t7)//1_000_000} | total={(t8-t0)//1_000_000}")
+                #print(" ")
+                print(f"yolo={(t4-t3)//1_000_000} | mem_write={(t8-t7)//1_000_000} | total={(t9-t0)//1_000_000}")
+
+  
+
+            
+    except KeyboardInterrupt:
+        print("Processor stopped by user")
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        # Cleanup
+        try:
+            depth_executor.shutdown(wait=True, timeout=2.0)
+        except:
+            pass
+        try:
+            shm.close()
+        except:
+            pass
+        try:
+            rl_obs_shm.close()
+            rl_obs_shm.unlink()
+        except:
+            pass
+
+
+def main_old():
     """Main function for YOLO frame processor with trajectory prediction."""
     parser = argparse.ArgumentParser(description="Process frames with YOLO and predict trajectories")
     parser.add_argument("--yolo_model", type=str, default=DEFAULT_YOLO_PATH, 
@@ -486,12 +601,13 @@ def main():
         while True:
             loop_idx += 1
             loop_start_time = time.time()
-            
+            t0 = time.perf_counter_ns()            
             # STEP 1: Extract RGB frame and start depth estimation IMMEDIATELY
             latest_rgb = get_latest_rgb_frame(frames_array, cursor, CAPACITY)
             depth_future = submit_depth_estimation(depth_executor, latest_rgb, depth_session)
             
-            t0 = time.perf_counter_ns()
+            t01 = time.perf_counter_ns()
+            
             
             # STEP 2: Process YOLO (runs concurrently with depth estimation)
             batch, all_pedestrians = process_buffer(
@@ -533,7 +649,7 @@ def main():
                     latest_mask = jnp.array(batch.mask_frames[-1])
                     heatmap_jax = jnp.array(heatmap)
                     
-                    t5 = time.perf_counter_ns()
+                    
                     
                     fused_obs = create_fused_observation_jax(
                         rgb=latest_rgb,
@@ -546,11 +662,9 @@ def main():
                     
                     fused_obs_np = np.array(fused_obs).astype(np.float32)
                     write_observation_to_shm(fused_obs_np, rl_obs_shm)
-                    
-                    if loop_idx % 300 == 0:
-                        save_debug_observation(loop_idx, fused_obs, './debug_png')
-                        print(f"timings_ms | yolo={(t1-t0)//1_000_000} | attn={(t2-t1)//1_000_000} | depth_wait={(t4-t3)//1_000_000} | fuse={(t5-t4)//1_000_000} | total={(t5-t0)//1_000_000}")
-                
+
+                    t5 = time.perf_counter_ns()
+                 
                 except Exception as e:
                     print(f"Error creating RL observation: {e}")
                     import traceback
@@ -563,7 +677,12 @@ def main():
             # Wait before next processing
             last_cursor_pos = cursor[0]
             while cursor[0] == last_cursor_pos:
-                time.sleep(0.001)
+                time.sleep(0.0001)
+            t6 = time.perf_counter_ns()
+            if loop_idx % 500 == 0:
+                #save_debug_observation(loop_idx, fused_obs, './debug_png')
+                print(f"timings_ms | depth_future={(t01-t0)//1_000_000} | yolo={(t1-t01)//1_000_000} | attn={(t2-t1)//1_000_000} | depth_wait={(t4-t3)//1_000_000} | fuse={(t5-t4)//1_000_000} | new_frame={(t6-t5)//1_000_000} | total={(t6-t0)//1_000_000}")
+
         
     except KeyboardInterrupt:
         print("Processor stopped by user")

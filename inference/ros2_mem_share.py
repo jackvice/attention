@@ -92,7 +92,8 @@ class CameraSingleSlot(Node):
             resized = cv2.resize(cv_image, (W, H))
             
             # Write timestamp first
-            timestamp = time.time()
+            #timestamp = time.time() # wall clock
+            timestamp = self.get_clock().now().nanoseconds / 1e9 # gazebo
             struct.pack_into('<d', self.shm.buf, 0, timestamp)
             
             # Write frame data

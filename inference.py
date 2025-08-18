@@ -15,7 +15,7 @@ import time, torch, nvtx, jax
 from concurrent.futures import ThreadPoolExecutor
 from collections import deque
 import struct
-
+import jax.numpy as jnp
 
 import struct
 # Import existing utilities
@@ -96,6 +96,64 @@ def read_latest_frame_if_new(
 
 
 def sample_frames_from_buffer(
+    frame_buffer: deque,
+    target_time_span: float = 2.0,
+    num_samples: int = 5
+) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    """
+    Sample frames covering approximately target_time_span seconds of simulation time.
+    
+    Args:
+        frame_buffer: Buffer of (frame, timestamp) tuples
+        target_time_span: Target time span in seconds (default: 2.0)
+        num_samples: Number of frames to sample (default: 5)
+        
+    Returns:
+        Tuple of (sampled_frames, sampled_timestamps) or None if insufficient data
+    """
+    if len(frame_buffer) < num_samples:
+        return None
+    
+    # Convert deque to list for easier indexing
+    buffer_list = list(frame_buffer)
+    
+    # Get newest timestamp (first in buffer since we use appendleft)
+    newest_time = buffer_list[0][1]
+    
+    # Find the oldest frame within target_time_span
+    target_oldest_time = newest_time - target_time_span
+    
+    # Find the furthest back index that's still within our time window
+    max_index = 0
+    for i, (frame, timestamp) in enumerate(buffer_list):
+        if timestamp >= target_oldest_time:
+            max_index = i
+        else:
+            break  # Timestamps get older as we go further in the buffer
+    
+    # If we don't have enough time span, use what we have
+    if max_index < num_samples - 1:
+        max_index = min(len(buffer_list) - 1, BUFFER_SIZE - 1)
+    
+    # Sample frames evenly across the available range
+    if max_index == 0:
+        # Only one frame available, duplicate it
+        indices = [0] * num_samples
+    else:
+        # Create evenly spaced indices
+        indices = [int(i * max_index / (num_samples - 1)) for i in range(num_samples)]
+    
+    sampled_frames = []
+    sampled_timestamps = []
+    
+    for idx in indices:
+        frame, timestamp = buffer_list[idx]
+        sampled_frames.append(frame)
+        sampled_timestamps.append(timestamp)
+    
+    return np.array(sampled_frames), np.array(sampled_timestamps)
+
+def sample_frames_from_buffer_old(
     frame_buffer: deque,
     sample_offsets: List[int] = SAMPLE_OFFSETS
 ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
@@ -442,11 +500,11 @@ def main():
 
                 t7 = time.perf_counter_ns()
 
+                
                 # Create fused observation
                 try:
-                    import jax.numpy as jnp
                     latest_mask = jnp.array(mask_frames[0])  # Newest frame mask
-                    heatmap_jax = jnp.array(heatmap)
+                    heatmap_jax = jnp.array(np.maximum(mask_frames[0], heatmap))
                     
                     fused_obs = create_fused_observation_jax(
                         rgb=latest_rgb,

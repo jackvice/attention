@@ -1,5 +1,7 @@
-ros2 launch roverrobotics_gazebo 4wd_rover_gazebo.launch.py
+
 ros2 launch roverrobotics_gazebo Leo_rover_gazebo.launch.py
+## ros2 launch roverrobotics_gazebo 4wd_rover_gazebo.launch.py
+
 
 ~/src/RoboTerrain/ros2_ws/src$ python ign_ros2_pose_topic.py island leo_rover
 ~/src/RoboTerrain/ros2_ws/src$ python ign_ros2_pose_topic.py inspect rover_zero4wd

@@ -475,7 +475,8 @@ def main():
                 # Create fused observation
                 try:
                     latest_mask = jnp.array(mask_frames[0])  # Newest frame mask
-                    heatmap_jax = jnp.array(np.maximum(mask_frames[0], heatmap))
+                    #heatmap_jax = jnp.array(np.maximum(mask_frames[0], heatmap))
+                    heatmap_jax = jnp.array(heatmap)
                     
                     fused_obs = create_fused_observation_jax(
                         rgb=latest_rgb,

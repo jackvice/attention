@@ -21,6 +21,7 @@ import struct
 # Import existing utilities
 from trajectory_utils import (
     Pedestrian,
+    create_target_heatmap_from_pedestrians,
     detect_pedestrians_yolo_onnx,
     create_masks_from_pedestrians,
     create_fused_observation_jax,
@@ -28,7 +29,8 @@ from trajectory_utils import (
     estimate_depth_pytorch,
     save_debug_observation,
     wait_for_depth_result,
-    submit_depth_estimation
+    submit_depth_estimation,
+    create_target_heatmap_from_pedestrians,
 )
 
 
@@ -242,7 +244,6 @@ class ProcessedBatch(NamedTuple):
     mask_frames: np.ndarray  # [T, H, W, 1]
     timestamps: np.ndarray  # [T]
 
-
 def process_with_attention(
     batch: ProcessedBatch,
     all_pedestrians: List[List[Pedestrian]],
@@ -275,48 +276,18 @@ def process_with_attention(
     predictions = predict_fn(rgb_frames, mask_frames)
     predicted_heatmap = np.array(predictions[0])
     
-    # Get current positions heatmap
-    #current_heatmap = create_target_heatmap_from_pedestrians(
-    #    all_pedestrians[-1], h, w, sigma=SIGMA_PX
-    #)
+    # Get current positions heatmap using Gaussian blobs
+    current_yolo_heatmap = create_target_heatmap_from_pedestrians(
+        all_pedestrians[0], h, w, sigma=SIGMA_PX
+    )
     
-    # Combine: current + predicted
-    return predicted_heatmap #+ current_heatmap don't combine
+    # Combine: emphasize current YOLO detections over attention predictions
+    combined_heatmap = 0.5 * predicted_heatmap + 0.7 * current_yolo_heatmap
     
-def process_with_attention_old(
-    batch: ProcessedBatch,
-    all_pedestrians: List[List[Pedestrian]],
-    predict_fn: callable
-) -> np.ndarray:
-    """
-    Process batch with attention model - only predict if last frame has pedestrians.
+    # Normalize to [0,1] range
+    combined_heatmap = np.clip(combined_heatmap, 0.0, 1.0)
     
-    Args:
-        batch: ProcessedBatch containing RGB and mask frames
-        all_pedestrians: Pedestrian detections for each frame in sequence
-        predict_fn: Jitted prediction function from loaded model
-        
-    Returns:
-        Predicted trajectory heatmap [H, W, 1] or zeros if no person in last frame
-    """
-    import jax.numpy as jnp
-    
-    # Check if last frame has pedestrians
-    if not all_pedestrians or len(all_pedestrians[-1]) == 0:
-        # Return empty heatmap with same shape as expected output
-        h, w = batch.rgb_frames.shape[1:3]  # Get spatial dimensions
-        return np.zeros((h, w, 1), dtype=np.float32)
-    
-    # Convert to JAX arrays and run prediction
-    rgb_frames = jnp.array(batch.rgb_frames)
-    mask_frames = jnp.array(batch.mask_frames)
-    predictions = predict_fn(rgb_frames, mask_frames)
-    
-    return np.array(predictions[0])
-
-
-
-
+    return combined_heatmap
 
 def process_frames_with_yolo(
     frames: np.ndarray,

@@ -4,7 +4,7 @@
 Simple test script to validate attention model on gazebo dataset.
 Tests first 10 sequences that have humans detected in the last frame.
 
-python test_attention_2.py --checkpoint ../checkpoint/checkpoint_epoch_2860.pkl
+python test_attention_2.py --checkpoint ./model_output/checkpoint_epoch_2860.pkl
 
 """
 import os

@@ -9,6 +9,7 @@ depth_anything_v2/
 model_output/
 preprocessed_data/
 log_dir/
+test/
 bak/
 *.pth
 *.pkl

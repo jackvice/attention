@@ -1,0 +1,18 @@
+total 198352
+-rw-r--r-- 1 root root   287198 Jun 23 10:03 config-6.8.0-64-generic
+-rw-r--r-- 1 root root   287198 Jul 15 12:33 config-6.8.0-65-generic
+drwx------ 3 root root     4096 Dec 31  1969 efi
+drwxr-xr-x 5 root root     4096 Jul 30 09:19 grub
+lrwxrwxrwx 1 root root       27 Jul 30 09:14 initrd.img -> initrd.img-6.8.0-65-generic
+-rw-r--r-- 1 root root 77296929 Aug 14 06:37 initrd.img-6.8.0-64-generic
+-rw-r--r-- 1 root root 77291020 Aug 14 06:37 initrd.img-6.8.0-65-generic
+lrwxrwxrwx 1 root root       27 Jul 30 09:14 initrd.img.old -> initrd.img-6.8.0-64-generic
+-rw-r--r-- 1 root root   182800 Feb  6  2022 memtest86+.bin
+-rw-r--r-- 1 root root   184476 Feb  6  2022 memtest86+.elf
+-rw-r--r-- 1 root root   184980 Feb  6  2022 memtest86+_multiboot.bin
+-rw------- 1 root root  8705152 Jun 23 10:03 System.map-6.8.0-64-generic
+-rw------- 1 root root  8705152 Jul 15 12:33 System.map-6.8.0-65-generic
+lrwxrwxrwx 1 root root       24 Jul 30 09:14 vmlinuz -> vmlinuz-6.8.0-65-generic
+-rw------- 1 root root 14969224 Jun 23 10:06 vmlinuz-6.8.0-64-generic
+-rw------- 1 root root 14969224 Jul 15 12:36 vmlinuz-6.8.0-65-generic
+lrwxrwxrwx 1 root root       24 Jul 30 09:14 vmlinuz.old -> vmlinuz-6.8.0-64-generic

@@ -1,0 +1,31 @@
+NAME   FSTYPE   FSVER LABEL           UUID                                 FSAVAIL FSUSE% MOUNTPOINTS
+loop0  squashfs 4.0                                                              0   100% /snap/core20/2582
+loop1  squashfs 4.0                                                              0   100% /snap/bare/5
+loop2  squashfs 4.0                                                              0   100% /snap/core20/2599
+loop3  squashfs 4.0                                                              0   100% /snap/core22/2010
+loop4  squashfs 4.0                                                              0   100% /snap/core22/2045
+loop5  squashfs 4.0                                                              0   100% /snap/firefox/6565
+loop6  squashfs 4.0                                                              0   100% /snap/firefox/6638
+loop7  squashfs 4.0                                                              0   100% /snap/gnome-3-38-2004/119
+loop8  squashfs 4.0                                                              0   100% /snap/gnome-3-38-2004/143
+loop9  squashfs 4.0                                                              0   100% /snap/gnome-42-2204/176
+loop10 squashfs 4.0                                                              0   100% /snap/gnome-42-2204/202
+loop11 squashfs 4.0                                                              0   100% /snap/gtk-common-themes/1535
+loop12 squashfs 4.0                                                              0   100% /snap/icloud-for-linux/283
+loop13 squashfs 4.0                                                              0   100% /snap/icloud-for-linux/287
+loop14 squashfs 4.0                                                              0   100% /snap/snap-store/1113
+loop15 squashfs 4.0                                                              0   100% /snap/snap-store/1216
+loop16 squashfs 4.0                                                              0   100% /snap/snapd/24718
+loop17 squashfs 4.0                                                              0   100% /snap/snapd/24792
+loop18 squashfs 4.0                                                              0   100% /snap/snapd-desktop-integration/253
+loop19 squashfs 4.0                                                              0   100% /snap/snapd-desktop-integration/315
+sda                                                                                       
+└─sda1 ext4     1.0   500g_backup     bb51c9b9-02c5-403d-a419-8ba356250a0a  398.4G     8% /home/jack/backup_500GB
+sdb                                                                                       
+├─sdb1 vfat     FAT32                 36E6-E4C5                             502.4M     2% /boot/efi
+└─sdb2 ext4     1.0                   86e18f0b-2dd8-4fcb-9390-1886e503b6a1  253.7G    67% /var/snap/firefox/common/host-hunspell
+                                                                                          /
+sdc                                                                                       
+└─sdc1 ext4     1.0   data            0b9c7be4-aa85-44cc-b806-2c5253d7156e  137.1G    80% /home/jack/data
+sdd                                                                                       
+└─sdd1 ext4     1.0   Backup_Mar_2025 3a788a91-4f9b-4645-82e6-29b528364828  188.3G    74% /home/jack/backup_2025

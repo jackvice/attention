@@ -221,7 +221,6 @@ def create_fused_observation_jax(
     rgb: jnp.ndarray, 
     depth: jnp.ndarray, 
     heatmap: jnp.ndarray,
-    pedestrian_masks: jnp.ndarray,
     target_height: int = 96,
     target_width: int = 96
 ) -> jnp.ndarray:
@@ -249,8 +248,8 @@ def create_fused_observation_jax(
     if rgb.shape[:2] != heatmap.shape[:2]:
         raise ValueError(f"RGB shape {rgb.shape[:2]} doesn't match heatmap shape {heatmap.shape[:2]}")
     
-    if rgb.shape[:2] != pedestrian_masks.shape[:2]:
-        raise ValueError(f"RGB shape {rgb.shape[:2]} doesn't match pedestrian_masks shape {pedestrian_masks.shape[:2]}")
+    #if rgb.shape[:2] != pedestrian_masks.shape[:2]:
+    #    raise ValueError(f"RGB shape {rgb.shape[:2]} doesn't match pedestrian_masks shape {pedestrian_masks.shape[:2]}")
     
     if rgb.shape[:2] != depth.shape[:2]:
         raise ValueError(f"RGB shape {rgb.shape[:2]} doesn't match depth shape {depth.shape[:2]}")
@@ -261,8 +260,8 @@ def create_fused_observation_jax(
     if len(heatmap.shape) != 3 or heatmap.shape[2] != 1:
         raise ValueError(f"Heatmap must be [H, W, 1], got {heatmap.shape}")
     
-    if len(pedestrian_masks.shape) != 3 or pedestrian_masks.shape[2] != 1:
-        raise ValueError(f"Pedestrian masks must be [H, W, 1], got {pedestrian_masks.shape}")
+    #if len(pedestrian_masks.shape) != 3 or pedestrian_masks.shape[2] != 1:
+    #    raise ValueError(f"Pedestrian masks must be [H, W, 1], got {pedestrian_masks.shape}")
     
     if len(depth.shape) != 2:
         raise ValueError(f"Depth must be [H, W], got {depth.shape}")
@@ -270,16 +269,8 @@ def create_fused_observation_jax(
     # Convert RGB to grayscale using standard luminance weights
     grayscale = 0.299 * rgb[:, :, 0] + 0.587 * rgb[:, :, 1] + 0.114 * rgb[:, :, 2]
     
-    # Overlay pedestrian masks as pure white (1.0) on grayscale
-    pedestrian_mask_2d = pedestrian_masks[:, :, 0]  # Remove channel dimension
-    grayscale_with_pedestrians = jnp.where(
-        pedestrian_mask_2d > 0.5,  # Threshold for binary mask
-        1.0,  # Pure white for pedestrians
-        grayscale  # Original grayscale otherwise
-    )
-    
     # Prepare channels for stacking
-    channel_0 = grayscale_with_pedestrians  # [H, W]
+    channel_0 = grayscale
     channel_1 = heatmap[:, :, 0]  # [H, W] - remove channel dimension
     channel_2 = depth  # [H, W]
     

@@ -1,0 +1,4 @@
+BootCurrent: 0001
+Timeout: 1 seconds
+BootOrder: 0001
+Boot0001* ubuntu	HD(1,GPT,05da7f97-739f-4b4e-a21c-342e5f4bf200,0x800,0x100000)/File(\EFI\UBUNTU\SHIMX64.EFI)

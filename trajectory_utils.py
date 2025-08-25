@@ -465,7 +465,7 @@ def _dataset_signature(dataset_root: str, params: Dict[str, Any]) -> str:
 def detect_pedestrians_yolo_onnx(
     image: np.ndarray,
     onnx_path: str = "yolo11n.onnx",
-    conf_threshold: float = 0.25,
+    conf_threshold: float = 0.35,
     iou_threshold: float = 0.45,
     person_class_id: int = 0,  # Typically person is class 0 in YOLO models
     session = None,

@@ -3,14 +3,24 @@ ros2 launch roverrobotics_gazebo Leo_rover_gazebo.launch.py
 ## ros2 launch roverrobotics_gazebo 4wd_rover_gazebo.launch.py
 
 
-~/src/RoboTerrain/ros2_ws/src$ python ign_ros2_pose_topic.py island leo_rover
+~/src/RoboTerrain/ros2_ws/src$ python ign_ros2_pose_topic.py inspect leo_rover
 ~/src/RoboTerrain/ros2_ws/src$ python ign_ros2_pose_topic.py inspect rover_zero4wd
 
 ~/src/attention/inference$ python ros2_mem_share.py 
 
 /dynamic_obstacles$ python spawn.py trajectory_file_name actor_name walk_name world_name
+python spawn.py --trajectory_file inspect_corner_triangle.sdf --world_name inspect
+
 
 python inference.py --attention_mode ./checkpoints/checkpoint_epoch_
+
+
+############## Dreamerv3 commands
+FILTERED_LD_LIBRARY_PATH=$(echo $LD_LIBRARY_PATH | tr ':' '\n' | grep -E '^/opt/ros' | tr '\n' ':' | sed 's/:$//')
+
+env LD_LIBRARY_PATH="$FILTERED_LD_LIBRARY_PATH" CUDA_HOME="" XLA_PYTHON_CLIENT_PREALLOCATE=false XLA_PYTHON_CLIENT_ALLOCATOR=platform python dreamerv3/main.py --configs leorover --logdir ~/backup_500GB/logdir/dreamer/{timestamp}
+
+
 
 
 

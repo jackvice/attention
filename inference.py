@@ -26,7 +26,7 @@ from trajectory_utils import (
     create_masks_from_pedestrians,
     create_fused_observation_jax,
     write_observation_to_shm,
-    estimate_depth_pytorch,
+    #estimate_depth_pytorch,
     save_debug_observation,
     wait_for_depth_result,
     submit_depth_estimation,
@@ -260,6 +260,7 @@ def process_with_attention(
     # Normalize to [0,1] range
     combined_heatmap = np.clip(combined_heatmap, 0.0, 1.0)
     
+    #return np.zeros((h, w, 1), dtype=np.float32)
     return combined_heatmap
 
 def process_frames_with_yolo(
@@ -339,6 +340,7 @@ def main():
     rl_obs_height, rl_obs_width = 96, 96
     rl_obs_channels = 3
 
+
     try:
         # Load YOLO model
         yolo_session = ort.InferenceSession(
@@ -379,6 +381,7 @@ def main():
         frame_buffer = deque(maxlen=BUFFER_SIZE)
         last_timestamp = 0.0
         depth_session = None
+        last_depth_image: Optional[np.ndarray] = None
         loop_idx = 0
         
         print("Waiting for frames...")
@@ -400,7 +403,7 @@ def main():
             
             # Try to sample frames
             sample_result = sample_frames_from_buffer(frame_buffer)
-            t2 = time.perf_counter_ns()
+            #t2 = time.perf_counter_ns()
             if sample_result is not None:
                 sampled_frames, sampled_timestamps = sample_result
                 
@@ -423,7 +426,7 @@ def main():
                 for i, pedestrians in enumerate(all_pedestrians):
                     if pedestrians:
                         mask_frames[i] = create_masks_from_pedestrians(pedestrians, H, W)
-                t5 = time.perf_counter_ns()
+                #t5 = time.perf_counter_ns()
                 
                 # Process with attention
                 batch = ProcessedBatch(
@@ -433,15 +436,28 @@ def main():
                 )
                 heatmap = process_with_attention(batch, all_pedestrians, predict_fn)
 
-                t6 = time.perf_counter_ns()
+                #t6 = time.perf_counter_ns()
 
                 # Wait for depth
                 depth_image, new_depth_session = wait_for_depth_result(depth_future, timeout_seconds=0.1)
                 if new_depth_session is not None:
                     depth_session = new_depth_session
+                    
+                if depth_image is None:
+                    # Reuse the last valid depth to avoid flicker; only use zeros if we have none yet
+                    if last_depth_image is not None:
+                        depth_image = last_depth_image
+                    else:
+                        depth_image = np.zeros(latest_rgb.shape[:2], dtype=np.float32)
+                else:
+                    # Cache the latest valid depth for future timeouts
+                    last_depth_image = depth_image
+                """
+                if new_depth_session is not None:
+                    depth_session = new_depth_session
                 if depth_image is None:
                     depth_image = np.zeros(latest_rgb.shape[:2], dtype=np.float32)
-
+                """
                 t7 = time.perf_counter_ns()
 
                 

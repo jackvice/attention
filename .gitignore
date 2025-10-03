@@ -16,7 +16,6 @@ bak/
 *.onnx
 *.pt
 *.engine
-*.png
 *.pyc
 *.log
 *.py~

@@ -1,0 +1,71 @@
+# Social Navigation in Unstructured Environments (Attention)
+
+Hybrid social navigation for robots in unstructured, human-occupied spaces.
+This repository contains the inference pipeline and supporting tools for our paper, "Social Navigation in Unstructured Environments." The system couples (i) spatiotemporal attention for near-future human occupancy prediction with (ii) model-based RL (DreamerV3) for traversability-aware control. In short: we predict where people are about to be, infer terrain structure, and navigate accordingly.
+
+> TL;DR: Run the ROS2 camera bridge, then run inference.
+>
+> ```bash
+> # terminal 1 (ROS2 -> shared memory)
+> cd inference
+> python ros2_mem_share.py
+>
+> # terminal 2 (pipeline inference from repo root)
+> python inference.py --attention_mode ./model_output/checkpoint_epoch_1000.pkl
+> ```
+
+---
+
+## Table of Contents
+
+- [Project Highlights](#project-highlights)
+- [Pipeline Overview](#pipeline-overview)
+- [Quickstart](#quickstart)
+- [Expected Outputs](#expected-outputs)
+- [Repository Layout](#repository-layout)
+- [Configuration & Models](#configuration--models)
+- [Datasets](#datasets)
+- [Troubleshooting](#troubleshooting)
+- [Roadmap](#roadmap)
+- [Citing This Work](#citing-this-work)
+- [License](#license)
+- [Contact](#contact)
+- [Acknowledgments](#acknowledgments)
+
+---
+
+## Project Highlights
+
+- Socially aware perception: YOLO detections + spatiotemporal attention predict where people will be next (dense heatmaps).
+- Terrain awareness: Monocular depth estimation produces scene geometry; fused with human occupancy and grayscale imagery.
+- RL control: A DreamerV3 agent consumes a compact 3-channel observation (attention/semantic, depth, grayscale) to plan safe, efficient PointNav trajectories through rough terrain and crowds.
+- Simulation focus: Validated in simulation with dynamic human actors and large equipment, targeting eventual real-world deployment.
+
+---
+
+## Pipeline Overview
+
+Inputs (per frame)
+- RGB stream from a ROS2 camera topic.
+- YOLO person detections to create binary masks and temporal identity links (for trajectories).
+- Monocular depth from the latest RGB image.
+
+Spatiotemporal attention
+- A lightweight CNN encoder processes short RGB+mask histories.
+- Multi-head self-attention aggregates temporal evidence to predict a near-future human occupancy heatmap (e.g., 320x320).
+- Decoding with skip connections yields a dense heatmap indicating regions likely to be occupied imminently.
+
+Fusion for control
+- We fuse (1) attention heatmap (human occupancy), (2) depth map, and (3) grayscale image into a 96x96x3 observation for the DreamerV3 policy (planning/agent code lives outside this repo; here we focus on the perception/attention path and runtime wiring).
+
+---
+
+## Quickstart
+
+### 1) Environment
+
+- Python: 3.10+ recommended
+- GPU: optional but recommended (ONNXRuntime CUDA + JAX acceleration)
+- Install dependencies:
+  ```bash
+  pip install -r requirements.txt

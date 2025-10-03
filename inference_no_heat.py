@@ -260,8 +260,8 @@ def process_with_attention(
     # Normalize to [0,1] range
     combined_heatmap = np.clip(combined_heatmap, 0.0, 1.0)
     
-    #return np.zeros((h, w, 1), dtype=np.float32)  # no heatmap
-    return combined_heatmap # with heatmap
+    return np.zeros((h, w, 1), dtype=np.float32)  # no heatmap
+    #return combined_heatmap # with heatmap
 
 def process_frames_with_yolo(
     frames: np.ndarray,

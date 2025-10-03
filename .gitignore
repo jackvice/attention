@@ -20,4 +20,5 @@ bak/
 *.pyc
 *.log
 *.py~
+*.*~
 __pycache__/

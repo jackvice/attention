@@ -36,8 +36,6 @@ from trajectory_utils import (
 
 
 # Shared memory names - must match producer
-SHM_IMG = "fifo_frames"
-SHM_META = "fifo_meta"
 SHM_NAME = "camera_latest"
 
 
@@ -46,10 +44,99 @@ SHM_NAME = "camera_latest"
 H, W = 320, 320
 BUFFER_SIZE = 60
 SAMPLE_OFFSETS = [0, 15, 30, 45, 59]
+NUM_IMAGES = 6                       # center + 5 windows
+FRAME_BYTES = H * W * 3              # uint8 RGB
+SHM_ACTIVE_CTRL = "active_window_ctrl"  # control block from Dreamer
 
 
 # Default YOLO model path
 DEFAULT_YOLO_PATH = "/home/jack/src/attention/models/yolo11n.onnx"
+
+def read_six_images_if_new(
+    shm: shared_memory.SharedMemory,
+    last_timestamp: float,
+    num_images: int = NUM_IMAGES,
+    height: int = H,
+    width: int = W,
+) -> Tuple[Optional[np.ndarray], Optional[List[np.ndarray]], float]:
+    """
+    Read all 6 images (center + 5 windows) from shared memory
+    if the timestamp is newer than last_timestamp.
+
+    Layout in SHM:
+        [0:8]   -> float64 timestamp (seconds)
+        [8:...] -> num_images * (H*W*3) bytes of uint8 RGB images.
+
+    Returns:
+        (center_rgb_float, window_rgb_list_float, current_timestamp)
+        or (None, None, current_timestamp) if no new frame.
+    """
+    # Read timestamp
+    current_timestamp = struct.unpack_from("<d", shm.buf, 0)[0]
+    if current_timestamp <= last_timestamp:
+        return None, None, current_timestamp
+
+    # Read all image bytes as a flat view
+    total_frame_bytes = num_images * FRAME_BYTES
+    raw = memoryview(shm.buf)[8 : 8 + total_frame_bytes]
+    arr = np.frombuffer(raw, dtype=np.uint8)
+
+    # Reshape to [num_images, H, W, 3]
+    arr = arr.reshape(num_images, height, width, 3)
+
+    # Convert to float32 [0,1]
+    arr_f = arr.astype(np.float32) / 255.0
+
+    # image_0 is center; image_1..5 are windows
+    center_rgb = arr_f[0]
+    window_rgbs = [arr_f[i] for i in range(1, num_images)]
+
+    return center_rgb, window_rgbs, current_timestamp
+
+
+
+def read_active_window_ctrl(
+    shm_ctrl: Optional[shared_memory.SharedMemory],
+    default_idx: int = 0,
+    default_step: int = 0,
+) -> Tuple[int, int]:
+    """
+    Read (window_idx, step_or_ts) from the control SHM.
+
+    Layout:
+        [0:4]  -> int32 window_idx (0..4)
+        [4:8]  -> int32 version    (unused here but reserved)
+        [8:16] -> int64 step_or_ts
+
+    If shm_ctrl is None, returns (default_idx, default_step).
+    """
+    if shm_ctrl is None:
+        return default_idx, default_step
+
+    buf = shm_ctrl.buf
+
+    window_idx = struct.unpack_from("<i", buf, 0)[0]
+    step_or_ts = struct.unpack_from("<q", buf, 8)[0]
+
+    return int(window_idx), int(step_or_ts)
+
+
+def attach_active_window_memory(
+    shm_name: str = SHM_ACTIVE_CTRL,
+) -> shared_memory.SharedMemory:
+    """
+    Attach to the small control shared memory block that carries:
+        int32 window_idx  (0..4)
+        int32 version     (monotonic counter or just write count)
+        int64 step_or_ts  (Dreamer step or sim timestamp)
+    """
+    try:
+        return shared_memory.SharedMemory(name=shm_name, track=False)
+    except FileNotFoundError:
+        print(f"Warning: control shared memory '{shm_name}' not found.")
+        print("Defaulting to window_idx=0, step=0.")
+        return None  # caller must handle None
+
 
 
 def attach_single_frame_memory(shm_name: str = SHM_NAME) -> shared_memory.SharedMemory:
@@ -68,33 +155,6 @@ def attach_single_frame_memory(shm_name: str = SHM_NAME) -> shared_memory.Shared
         print(f"Error: Shared memory '{shm_name}' not found. Is producer running?")
         sys.exit(1)
 
-def read_latest_frame_if_new(
-    shm: shared_memory.SharedMemory,
-    last_timestamp: float
-) -> Tuple[Optional[np.ndarray], float]:
-    """
-    Read frame from shared memory if timestamp is newer.
-    
-    Args:
-        shm: Shared memory object
-        last_timestamp: Last seen timestamp
-        
-    Returns:
-        Tuple of (frame_array or None, current_timestamp)
-    """
-    # Read timestamp
-    current_timestamp = struct.unpack_from('<d', shm.buf, 0)[0]
-    
-    # Check if frame is new
-    if current_timestamp <= last_timestamp:
-        return None, current_timestamp
-    
-    # Read frame data
-    frame_bytes = bytes(shm.buf[8:8 + H*W*3])
-    frame = np.frombuffer(frame_bytes, dtype=np.uint8).reshape((H, W, 3))
-    frame_float = frame.astype(np.float32) / 255.0
-    
-    return frame_float, current_timestamp
 
 
 def sample_frames_from_buffer(
@@ -263,265 +323,349 @@ def process_with_attention(
     #return np.zeros((h, w, 1), dtype=np.float32)  # no heatmap
     return combined_heatmap # with heatmap
 
-def process_frames_with_yolo(
-    frames: np.ndarray,
-    yolo_session: ort.InferenceSession
-) -> Tuple[np.ndarray, List[List[Pedestrian]]]:
-    """
-    Process frames with YOLO to detect pedestrians.
-    
-    Args:
-        frames: Numpy array of frames [T, H, W, 3] with values in [0,1]
-        yolo_session: ONNX session for YOLO model
-        
-    Returns:
-        Tuple of (frames, list of pedestrian detections for each frame)
-    """
-    all_pedestrians = []
-    
-    for frame in frames:
-        # Detect pedestrians in frame
-        pedestrians, yolo_session = detect_pedestrians_yolo_onnx(
-            frame,
-            session=yolo_session
-        )
-        
-        all_pedestrians.append(pedestrians)
-    
-    return frames, all_pedestrians
 
 
-def create_mask_frames(
-    frames: np.ndarray,
-    pedestrians_list: List[List[Pedestrian]]
+
+import numpy as np
+from typing import Tuple
+
+def fuse_gray_alpha_depth(
+    rgb: np.ndarray,
+    boxes: np.ndarray,
+    depth: np.ndarray,
+    depth_min: float = 0.0,
+    depth_max: float = 10.0,
 ) -> np.ndarray:
     """
-    Create binary mask frames for detected pedestrians.
-    
+    Convert RGB to grayscale + alpha (YOLO boxes) and fuse with depth
+    into a 3-channel float32 image.
+
     Args:
-        frames: Numpy array of frames [T, H, W, 3]
-        pedestrians_list: List of pedestrian detections for each frame
-        
+        rgb:   H x W x 3 uint8 or float32 image (RGB).
+        boxes: N x 5 array of YOLO detections in pixel coords:
+               [x_min, y_min, x_max, y_max, score] per row.
+               Coordinates must be in the same H,W frame as `rgb`.
+        depth: H x W or H x W x 1 float32 depth image (meters or arbitrary units).
+        depth_min: Minimum depth value for clipping (default 0.0).
+        depth_max: Maximum depth value for clipping/normalization (default 10.0).
+
     Returns:
-        Numpy array of mask frames [T, H, W, 1]
+        fused: H x W x 3 float32 array in [0,1], where:
+               channel 0: grayscale luminance
+               channel 1: alpha / person-confidence mask
+               channel 2: normalized depth
     """
-    T, H, W, _ = frames.shape
-    mask_frames = np.zeros((T, H, W, 1), dtype=np.float32)
+    # --- Basic shape checks ---
+    assert rgb.ndim == 3 and rgb.shape[2] == 3, "rgb must be HxWx3"
+    h, w, _ = rgb.shape
+
+    if depth.ndim == 3 and depth.shape[2] == 1:
+        depth = depth[..., 0]
+    assert depth.shape == (h, w), "depth must match rgb spatial size"
+
+    if boxes.size == 0:
+        boxes = boxes.reshape(0, 5)
+    assert boxes.ndim == 2 and boxes.shape[1] >= 5, "boxes must be Nx5+"
+
+    # --- Convert RGB to grayscale luminance in [0,1] ---
+    if rgb.dtype == np.uint8:
+        rgb_f = rgb.astype(np.float32) / 255.0
+    else:
+        rgb_f = rgb.astype(np.float32)
+
+    # Standard luminance transform
+    L = 0.299 * rgb_f[..., 0] + 0.587 * rgb_f[..., 1] + 0.114 * rgb_f[..., 2]  # HxW
+
+    # --- Initialize alpha mask ---
+    A = np.zeros((h, w), dtype=np.float32)
+
+    # --- Compute border thickness based on resolution ---
+    # Aim for ≥1px after downsampling to 96x96
+    scale = max(h, w) / 96.0
+
+    t = max(4, int(round(max(H,W) / 48))) # border thickness pixels to survive downsampling
     
-    for i, pedestrians in enumerate(pedestrians_list):
-        if pedestrians:
-            mask_frames[i] = create_masks_from_pedestrians(
-                pedestrians,
-                height=H,
-                width=W
-            )
-    
-    return mask_frames
+    # --- Overlay boxes: interior alpha + thick border ---
+    for box in boxes:
+        x_min, y_min, x_max, y_max, score = box[:5]
+
+        # Clamp to valid integer pixel indices
+        x0 = max(0, min(w - 1, int(np.floor(x_min))))
+        y0 = max(0, min(h - 1, int(np.floor(y_min))))
+        x1 = max(0, min(w - 1, int(np.ceil(x_max))))
+        y1 = max(0, min(h - 1, int(np.ceil(y_max))))
+
+        if x1 <= x0 or y1 <= y0:
+            continue  # degenerate box
+
+        # Interior region (may be empty if box is very thin)
+        xi0 = x0 + t
+        yi0 = y0 + t
+        xi1 = x1 - t
+        yi1 = y1 - t
+
+        # Interior: encode confidence in alpha, keep grayscale as-is
+        if xi1 > xi0 and yi1 > yi0:
+            A[yi0:yi1, xi0:xi1] = np.maximum(A[yi0:yi1, xi0:xi1], float(score))
+
+        # Border region: overwrite to ensure visibility after downsampling
+        # Border brightness: white (1.0) for maximum contrast.
+        # Alpha on border: 1.0 to make it a strong signal.
+        # Top border
+        yt0, yt1 = y0, min(y0 + t, y1)
+        L[yt0:yt1, x0:x1] = 1.0
+        A[yt0:yt1, x0:x1] = 1.0
+
+        # Bottom border
+        yb0, yb1 = max(y1 - t, y0), y1
+        L[yb0:yb1, x0:x1] = 1.0
+        A[yb0:yb1, x0:x1] = 1.0
+
+        # Left border
+        xl0, xl1 = x0, min(x0 + t, x1)
+        L[y0:y1, xl0:xl1] = 1.0
+        A[y0:y1, xl0:xl1] = 1.0
+
+        # Right border
+        xr0, xr1 = max(x1 - t, x0), x1
+        L[y0:y1, xr0:xr1] = 1.0
+        A[y0:y1, xr0:xr1] = 1.0
+
+    # --- Normalize depth to [0,1] ---
+    depth_f = depth.astype(np.float32)
+    # Replace NaNs/Infs with far depth
+    invalid = ~np.isfinite(depth_f)
+    if np.any(invalid):
+        depth_f[invalid] = depth_max
+
+    depth_f = np.clip(depth_f, depth_min, depth_max)
+    if depth_max > depth_min:
+        D_norm = (depth_f - depth_min) / (depth_max - depth_min)
+    else:
+        # avoid divide-by-zero; fall back to zeros
+        D_norm = np.zeros_like(depth_f, dtype=np.float32)
+
+    # --- Stack into fused 3-channel output ---
+    fused = np.stack([L, A, D_norm], axis=-1).astype(np.float32)  # HxWx3
+
+    return fused
+
+
 
 
 def main():
-    """Main function with single-slot shared memory approach."""
+    """Main function with multi-image shared memory and active window control."""
     parser = argparse.ArgumentParser(description="Process frames with YOLO and predict trajectories")
-    parser.add_argument("--yolo_model", type=str, default=DEFAULT_YOLO_PATH, 
-                      help=f"Path to YOLO ONNX model (default: {DEFAULT_YOLO_PATH})")
-    parser.add_argument("--attention_model", type=str, required=True,
-                      help="Path to attention model checkpoint file")
-    parser.add_argument("--rl-obs-name", type=str, default="rl_observation",
-                      help="Name of RL observation shared memory (default: rl_observation)")
-    
+    parser.add_argument(
+        "--yolo_model",
+        type=str,
+        default=DEFAULT_YOLO_PATH,
+        help=f"Path to YOLO ONNX model (default: {DEFAULT_YOLO_PATH})",
+    )
+    parser.add_argument(
+        "--attention_model",
+        type=str,
+        required=True,
+        help="Path to attention model checkpoint file",
+    )
+    parser.add_argument(
+        "--rl-obs-name",
+        type=str,
+        default="rl_observation",
+        help="Name of RL observation shared memory (default: rl_observation)",
+    )
+
     args = parser.parse_args()
-    
-    print(f"Trajectory prediction pipeline starting...")
+
+    print("Trajectory prediction pipeline starting...")
     print(f"Using YOLO model: {args.yolo_model}")
     print(f"Using attention model: {args.attention_model}")
     print(f"Sampling frames at offsets: {SAMPLE_OFFSETS}")
-    
-    # RL observation parameters
-    rl_obs_height, rl_obs_width = 96, 96
-    rl_obs_channels = 3
 
+    # RL observation parameters (unchanged: 96x96x3)
+    rl_obs_height, rl_obs_width = 96, 96
+    rl_obs_channels = 4
+
+    shm = None
+    shm_ctrl = None
+    rl_obs_shm = None
+    depth_executor = None
 
     try:
         # Load YOLO model
         yolo_session = ort.InferenceSession(
             args.yolo_model,
-            providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
+            providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
         )
         print("Successfully loaded YOLO model")
-        
+
         # Load attention model
         predict_fn, model_info = load_attention_model(args.attention_model)
-        print(f"Successfully loaded attention model")
+        print("Successfully loaded attention model")
 
-        # Attach to shared memory
-        shm = attach_single_frame_memory()
-        print("Successfully attached to shared memory")
-        
+        # Attach to camera shared memory (6 images)
+        shm = attach_single_frame_memory(SHM_NAME)
+        print("Successfully attached to camera shared memory")
+
+        # Attach to active-window control shared memory
+        shm_ctrl = attach_active_window_memory()
+        if shm_ctrl is None:
+            print(
+                f"Warning: control SHM '{SHM_ACTIVE_CTRL}' not found; "
+                "defaulting to window_idx=0, step=0."
+            )
+        else:
+            print(f"Successfully attached to control SHM '{SHM_ACTIVE_CTRL}'")
+
         # Setup RL observation shared memory
         try:
             shared_memory.SharedMemory(name=args.rl_obs_name).unlink()
         except FileNotFoundError:
             pass
-        
+
         header_size = 8 + 4  # timestamp + valid flag
         obs_data_size = rl_obs_height * rl_obs_width * rl_obs_channels * 4  # float32
         rl_obs_shm_size = header_size + obs_data_size
-        
+
         rl_obs_shm = shared_memory.SharedMemory(
             create=True,
             size=rl_obs_shm_size,
-            name=args.rl_obs_name
+            name=args.rl_obs_name,
         )
+        print(f"Created RL observation SHM '{args.rl_obs_name}'")
 
         # Create thread pool for depth estimation
-        depth_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="depth_worker")
+        depth_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="depth_worker"
+        )
         print("Created ThreadPoolExecutor for depth estimation")
-        
+
         # Initialize state
-        frame_buffer = deque(maxlen=BUFFER_SIZE)
+        frame_buffer: deque = deque(maxlen=BUFFER_SIZE)  # center-view temporal buffer
         last_timestamp = 0.0
         depth_session = None
         last_depth_image: Optional[np.ndarray] = None
         loop_idx = 0
-        
+
         print("Waiting for frames...")
-        
+
         # Main processing loop
         while True:
             loop_idx += 1
-            t0 = time.perf_counter_ns()
-            # Wait for a new frame to arrive
+
+            # 1) Wait for a new 6-image frame
             while True:
-                new_frame, current_timestamp = read_latest_frame_if_new(shm, last_timestamp)
-                if new_frame is not None:
-                    break
-                time.sleep(0.0001)  # Short sleep while waiting for new frame
-            t1 = time.perf_counter_ns()
-            # Add to buffer (deque modifies in-place)
-            frame_buffer.appendleft((new_frame, current_timestamp))
-            last_timestamp = current_timestamp
-            
-            # Try to sample frames
-            sample_result = sample_frames_from_buffer(frame_buffer)
-            #t2 = time.perf_counter_ns()
-            if sample_result is not None:
-                sampled_frames, sampled_timestamps = sample_result
-                
-                # Start depth estimation on latest frame
-                latest_rgb = sampled_frames[0]  # First frame is newest
-                depth_future = submit_depth_estimation(depth_executor, latest_rgb, depth_session)
-
-                t3 = time.perf_counter_ns()
-                
-                # Process with YOLO
-                all_pedestrians = []
-                for frame in sampled_frames:
-                    pedestrians, yolo_session = detect_pedestrians_yolo_onnx(frame, session=yolo_session)
-                    all_pedestrians.append(pedestrians)
-
-                t4 = time.perf_counter_ns()
-                    
-                # Create mask frames
-                mask_frames = np.zeros((len(sampled_frames), H, W, 1), dtype=np.float32)
-                for i, pedestrians in enumerate(all_pedestrians):
-                    if pedestrians:
-                        mask_frames[i] = create_masks_from_pedestrians(pedestrians, H, W)
-                #t5 = time.perf_counter_ns()
-                
-                # Process with attention
-                batch = ProcessedBatch(
-                    rgb_frames=sampled_frames,
-                    mask_frames=mask_frames,
-                    timestamps=sampled_timestamps
+                center_rgb, window_rgbs, current_timestamp = read_six_images_if_new(
+                    shm, last_timestamp
                 )
-                heatmap = process_with_attention(batch, all_pedestrians, predict_fn)
+                if center_rgb is not None:
+                    break
+                time.sleep(0.0001)
 
-                #t6 = time.perf_counter_ns()
+            # center_rgb, window_rgbs are float32 [0,1]
+            frame_buffer.appendleft((center_rgb, current_timestamp))
+            last_timestamp = current_timestamp
 
-                # Wait for depth
-                depth_image, new_depth_session = wait_for_depth_result(depth_future, timeout_seconds=0.1)
-                if new_depth_session is not None:
-                    depth_session = new_depth_session
-                    
-                if depth_image is None:
-                    # Reuse the last valid depth to avoid flicker; only use zeros if we have none yet
-                    if last_depth_image is not None:
-                        depth_image = last_depth_image
-                    else:
-                        depth_image = np.zeros(latest_rgb.shape[:2], dtype=np.float32)
-                else:
-                    # Cache the latest valid depth for future timeouts
-                    last_depth_image = depth_image
-                """
-                if new_depth_session is not None:
-                    depth_session = new_depth_session
-                if depth_image is None:
-                    depth_image = np.zeros(latest_rgb.shape[:2], dtype=np.float32)
-                """
-                t7 = time.perf_counter_ns()
-
-                
-                # Create fused observation
-                try:
-                    heatmap_jax = jnp.array(heatmap)
-                    
-                    fused_obs = create_fused_observation_jax(
-                        rgb=latest_rgb,
-                        depth=jnp.array(depth_image),
-                        heatmap=heatmap_jax,
-                        target_height=rl_obs_height,
-                        target_width=rl_obs_width
-                    )
-                    
-                    fused_obs_np = np.array(fused_obs).astype(np.float32)
-                    write_observation_to_shm(fused_obs_np, rl_obs_shm)
-
-                    t8 = time.perf_counter_ns()
-
-                        
-                except Exception as e:
-                    print(f"Error creating RL observation: {e}")
-            
-            else:
-                # Buffer not full yet
+            # 2) Run attention pipeline (Pipeline 1) on center-view buffer
+            heatmap, yolo_session = run_attention_pipeline_from_buffer(
+                frame_buffer, yolo_session, predict_fn
+            )
+            if heatmap is None:
+                # Buffer not full yet / not enough temporal span
                 if loop_idx % 100 == 0:
                     print(f"Buffer filling: {len(frame_buffer)}/{BUFFER_SIZE}")
+                continue
 
-            t9 = time.perf_counter_ns()
+            # 3) Read active window selection (for image_2)
+            window_idx, step_or_ts = read_active_window_ctrl(shm_ctrl, default_idx=0, default_step=0)
+            # Clamp index to [0, 4]
+            if window_idx < 0 or window_idx > 4:
+                window_idx = 0
+            # image_2 is one of the 5 windows
+            image_2_rgb = window_rgbs[window_idx]  # float32 [0,1], shape [H,W,3]
 
-            if loop_idx % 500 == 0:
-                #save_debug_observation(loop_idx, fused_obs, './debug_png')
-                #print(f"in_ms | get_frames={(t1-t0)//1_000_000} | t2={(t2-t1)//1_000_000} | t3={(t3-t2)//1_000_000}")
-                #print(f"yolo={(t4-t3)//1_000_000} | t5={(t5-t4)//1_000_000} | t6={(t6-t5)//1_000_000}")
-                #print(f"depth={(t7-t6)//1_000_000} | t8={(t8-t7)//1_000_000} | total={(t8-t0)//1_000_000}")
-                #print(" ")
-                print(f"yolo={(t4-t3)//1_000_000}ms | mem_write={(t8-t7)//1_000_000}ms | total={(t9-t0)//1_000_000}ms")
+            # 4) Start depth estimation on image_2 (Pipeline 3)
+            depth_future = submit_depth_estimation(depth_executor, image_2_rgb, depth_session)
 
-            
+            # 5) Run YOLO on image_2 (Pipeline 2)
+            pedestrians_win, yolo_session = run_yolo_on_window(
+                image_2_rgb, yolo_session
+            )
+            # (We don't yet use pedestrians_win in the RL obs; it's ready for future fusion.)
+
+            # 6) Wait for depth result, with cached fallback like before
+            depth_image, new_depth_session = wait_for_depth_result(
+                depth_future, timeout_seconds=0.1
+            )
+            if new_depth_session is not None:
+                depth_session = new_depth_session
+
+            if depth_image is None:
+                if last_depth_image is not None:
+                    depth_image = last_depth_image
+                else:
+                    depth_image = np.zeros(image_2_rgb.shape[:2], dtype=np.float32)
+            else:
+                last_depth_image = depth_image
+
+            # 7) Create fused observation (still 96x96x3 via existing JAX helper)
+            try:
+                heatmap_jax = jnp.array(heatmap)
+
+                # 1) Fused 3-channel image: gray + alpha (YOLO boxes) + depth
+                fused_img = fuse_gray_alpha_depth(
+                    rgb=image_2_rgb,
+                    boxes=pedestrians_win,
+                    depth=depth_image,
+                    target_height=rl_obs_height,
+                    target_width=rl_obs_width,
+                )  # shape (H, W, 3)
+
+                # 2) Resize heatmap to RL resolution; ensure it is (H, W, 1)
+                heatmap_resized = cv2.resize(
+                    heatmap, (rl_obs_width, rl_obs_height), interpolation=cv2.INTER_LINEAR
+                )
+                if heatmap_resized.ndim == 2:
+                    heatmap_resized = heatmap_resized[..., None]
+
+                # 3) Stack into 4-channel observation: [heatmap, gray, alpha, depth]
+                rl_obs = np.concatenate([heatmap_resized, fused_img], axis=-1)  # (H, W, 4)
+                rl_obs = rl_obs.astype(np.float32)
+
+                write_observation_to_shm(rl_obs, rl_obs_shm)
+
+
+            except Exception as e:
+                print(f"Error creating RL observation: {e}")
+
     except KeyboardInterrupt:
-        print("Processor stopped by user")
+        print("Interrupted by user. Shutting down.")
     except Exception as e:
-        print(f"Error: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        print(f"Fatal error in main(): {e}")
     finally:
-        # Cleanup
+        print("Cleaning up resources...")
         try:
-            depth_executor.shutdown(wait=True, timeout=2.0)
-        except:
+            if depth_executor is not None:
+                depth_executor.shutdown(wait=True)
+        except Exception:
             pass
         try:
-            shm.close()
-        except:
+            if shm is not None:
+                shm.close()
+        except Exception:
             pass
         try:
-            rl_obs_shm.close()
-            rl_obs_shm.unlink()
-        except:
+            if shm_ctrl is not None:
+                shm_ctrl.close()
+        except Exception:
             pass
-
-
-
+        try:
+            if rl_obs_shm is not None:
+                rl_obs_shm.close()
+                rl_obs_shm.unlink()
+        except Exception:
+            pass
+        
 
 if __name__ == "__main__":
     main()

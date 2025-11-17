@@ -36,6 +36,110 @@ g_shm: Optional[shared_memory.SharedMemory] = None
 
 ImageRGB = npt.NDArray[np.uint8]
 
+from typing import Dict
+
+def intrinsics_from_hfov(width: int, height: int, hfov: float) -> np.ndarray:
+    """Simple pinhole intrinsics from horizontal FOV (radians)."""
+    fx = (width / 2.0) / np.tan(hfov / 2.0)
+    fy = fx
+    cx = width / 2.0
+    cy = height / 2.0
+    K = np.array(
+        [[fx, 0.0, cx],
+         [0.0, fy, cy],
+         [0.0, 0.0, 1.0]],
+        dtype=np.float32,
+    )
+    return K
+
+
+def adjust_K_for_crop(K_full: np.ndarray, crop_top_px: int) -> np.ndarray:
+    """Shift principal point down by crop_top_px rows."""
+    K = K_full.copy()
+    K[1, 2] -= float(crop_top_px)
+    return K
+
+
+def make_yaw_lut_rect_to_rect(
+    src_size: Tuple[int, int],      # (W_src, H_src) AFTER CROP
+    dst_hw: int,                    # 320 for 320x320
+    hfov_src: float,                # radians (2.8)
+    hfov_win: float,                # radians (np.deg2rad(60))
+    yaw_deg: float,                 # window center yaw
+    crop_top_px: int,               # how many rows were removed from the top
+) -> Tuple[npt.NDArray[np.float32], npt.NDArray[np.float32]]:
+    """
+    Remap a local 60° pinhole view (dst) into the wide source rectilinear image (src).
+    Returns (map_x, map_y) for cv2.remap, to be applied to the cropped source image.
+    """
+    Wc, Hc = src_size  # cropped source size (e.g. 1600 x 320)
+
+    # Source intrinsics for ORIGINAL full frame, then adjust for top crop
+    K_src_full = intrinsics_from_hfov(Wc, Hc + crop_top_px, hfov_src)
+    K_src = adjust_K_for_crop(K_src_full, crop_top_px)
+    fx_s, fy_s, cx_s, cy_s = K_src[0, 0], K_src[1, 1], K_src[0, 2], K_src[1, 2]
+
+    # Target (window) intrinsics for dst_hw x dst_hw and hfov_win
+    Wd = Hd = int(dst_hw)
+    K_dst = intrinsics_from_hfov(Wd, Hd, hfov_win)
+    fx_d, fy_d, cx_d, cy_d = K_dst[0, 0], K_dst[1, 1], K_dst[0, 2], K_dst[1, 2]
+
+    # Meshgrid of destination pixels
+    xi, yi = np.meshgrid(
+        np.arange(Wd, dtype=np.float32),
+        np.arange(Hd, dtype=np.float32),
+    )
+
+    # Rays in target camera (before yaw)
+    x = (xi - cx_d) / fx_d
+    y = (yi - cy_d) / fy_d
+    z = np.ones_like(x, dtype=np.float32)
+    norm = np.sqrt(x * x + y * y + z * z)
+    x /= norm
+    y /= norm
+    z /= norm
+
+    # Rotate by yaw around vertical axis (Y)
+    psi = np.deg2rad(yaw_deg)
+    c, s = np.cos(psi), np.sin(psi)
+    xr = c * x + s * z
+    yr = y
+    zr = -s * x + c * z
+
+    # Project into source image
+    eps = 1e-6
+    zr = np.maximum(zr, eps)
+    u = fx_s * (xr / zr) + cx_s
+    v = fy_s * (yr / zr) + cy_s
+
+    return u.astype(np.float32), v.astype(np.float32)
+
+
+def build_lut_bank(
+    src_size: Tuple[int, int],   # (Wc, Hc) after crop
+    hfov_src: float,
+    yaws_deg: Tuple[float, ...],
+    hfov_win_deg: float = 60.0,
+    out_hw: int = 320,
+    crop_top_px: int = 0,
+) -> Dict[int, Tuple[npt.NDArray[np.float32], npt.NDArray[np.float32]]]:
+    """Precompute rect-to-rect LUTs for each yaw bin (full-frame → 320x320 view)."""
+    bank: Dict[int, Tuple[npt.NDArray[np.float32], npt.NDArray[np.float32]]] = {}
+    hfov_win = np.deg2rad(hfov_win_deg)
+    for idx, yaw in enumerate(yaws_deg):
+        mx, my = make_yaw_lut_rect_to_rect(
+            src_size=src_size,
+            dst_hw=out_hw,
+            hfov_src=hfov_src,
+            hfov_win=hfov_win,
+            yaw_deg=yaw,
+            crop_top_px=crop_top_px,
+        )
+        bank[idx] = (mx, my)
+    return bank
+
+
+
 
 def make_yaw_lut_rect_to_rect(
     src_size: Tuple[int, int],      # (W_src, H_src) AFTER CROP

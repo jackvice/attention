@@ -36,55 +36,77 @@ g_shm: Optional[shared_memory.SharedMemory] = None
 
 ImageRGB = npt.NDArray[np.uint8]
 
+from typing import Dict
+
+def intrinsics_from_hfov(width: int, height: int, hfov: float) -> np.ndarray:
+    """Simple pinhole intrinsics from horizontal FOV (radians)."""
+    fx = (width / 2.0) / np.tan(hfov / 2.0)
+    fy = fx
+    cx = width / 2.0
+    cy = height / 2.0
+    K = np.array(
+        [[fx, 0.0, cx],
+         [0.0, fy, cy],
+         [0.0, 0.0, 1.0]],
+        dtype=np.float32,
+    )
+    return K
+
+
+def adjust_K_for_crop(K_full: np.ndarray, crop_top_px: int) -> np.ndarray:
+    """Shift principal point down by crop_top_px rows."""
+    K = K_full.copy()
+    K[1, 2] -= float(crop_top_px)
+    return K
+
 
 def make_yaw_lut_rect_to_rect(
     src_size: Tuple[int, int],      # (W_src, H_src) AFTER CROP
-    dst_hw: int,                    # 96 for 96x96
+    dst_hw: int,                    # 320 for 320x320
     hfov_src: float,                # radians (2.8)
     hfov_win: float,                # radians (np.deg2rad(60))
     yaw_deg: float,                 # window center yaw
-    crop_top_px: int                # how many rows were removed from the top
+    crop_top_px: int,               # how many rows were removed from the top
 ) -> Tuple[npt.NDArray[np.float32], npt.NDArray[np.float32]]:
     """
     Remap a local 60° pinhole view (dst) into the wide source rectilinear image (src).
-    Returns (map_x, map_y) for cv2.remap.
+    Returns (map_x, map_y) for cv2.remap, to be applied to the cropped source image.
     """
-    Wc, Hc = src_size  # cropped source size
-    assert Wc > 0 and Hc > 0
+    Wc, Hc = src_size  # cropped source size (e.g. 1600 x 320)
 
-    # Source intrinsics for the ORIGINAL full frame, then adjust for top crop.
-    # Full height = Hc + crop_top_px
+    # Source intrinsics for ORIGINAL full frame, then adjust for top crop
     K_src_full = intrinsics_from_hfov(Wc, Hc + crop_top_px, hfov_src)
     K_src = adjust_K_for_crop(K_src_full, crop_top_px)
-    fx_s, fy_s, cx_s, cy_s = K_src[0,0], K_src[1,1], K_src[0,2], K_src[1,2]
+    fx_s, fy_s, cx_s, cy_s = K_src[0, 0], K_src[1, 1], K_src[0, 2], K_src[1, 2]
 
-    # Target (window) intrinsics for 96x96 and 60° HFOV
+    # Target (window) intrinsics for dst_hw x dst_hw and hfov_win
     Wd = Hd = int(dst_hw)
     K_dst = intrinsics_from_hfov(Wd, Hd, hfov_win)
-    fx_d, fy_d, cx_d, cy_d = K_dst[0,0], K_dst[1,1], K_dst[0,2], K_dst[1,2]
+    fx_d, fy_d, cx_d, cy_d = K_dst[0, 0], K_dst[1, 1], K_dst[0, 2], K_dst[1, 2]
 
     # Meshgrid of destination pixels
-    xi, yi = np.meshgrid(np.arange(Wd, dtype=np.float32),
-                         np.arange(Hd, dtype=np.float32))
+    xi, yi = np.meshgrid(
+        np.arange(Wd, dtype=np.float32),
+        np.arange(Hd, dtype=np.float32),
+    )
 
     # Rays in target camera (before yaw)
     x = (xi - cx_d) / fx_d
     y = (yi - cy_d) / fy_d
-    z = np.ones_like(x)
-    # Normalize rays (optional; not strictly needed for pinhole projection)
-    norm = np.sqrt(x*x + y*y + z*z)
-    x /= norm; y /= norm; z /= norm
+    z = np.ones_like(x, dtype=np.float32)
+    norm = np.sqrt(x * x + y * y + z * z)
+    x /= norm
+    y /= norm
+    z /= norm
 
-    # Rotate by yaw around the camera vertical axis (Y axis)
+    # Rotate by yaw around vertical axis (Y)
     psi = np.deg2rad(yaw_deg)
     c, s = np.cos(psi), np.sin(psi)
-    # R_yaw * [x, y, z]
-    xr =  c * x + s * z
-    yr =  y
+    xr = c * x + s * z
+    yr = y
     zr = -s * x + c * z
 
     # Project into source image
-    # If zr <= 0, mark outside (behind camera)
     eps = 1e-6
     zr = np.maximum(zr, eps)
     u = fx_s * (xr / zr) + cx_s
@@ -98,47 +120,24 @@ def build_lut_bank(
     hfov_src: float,
     yaws_deg: Tuple[float, ...],
     hfov_win_deg: float = 60.0,
-    out_hw: int = 96,
-    crop_top_px: int = 0
+    out_hw: int = 320,
+    crop_top_px: int = 0,
 ) -> Dict[int, Tuple[npt.NDArray[np.float32], npt.NDArray[np.float32]]]:
-    """Precompute remap LUTs for each yaw bin."""
+    """Precompute rect-to-rect LUTs for each yaw bin (full-frame → 320x320 view)."""
     bank: Dict[int, Tuple[npt.NDArray[np.float32], npt.NDArray[np.float32]]] = {}
+    hfov_win = np.deg2rad(hfov_win_deg)
     for idx, yaw in enumerate(yaws_deg):
         mx, my = make_yaw_lut_rect_to_rect(
             src_size=src_size,
             dst_hw=out_hw,
             hfov_src=hfov_src,
-            hfov_win=np.deg2rad(hfov_win_deg),
+            hfov_win=hfov_win,
             yaw_deg=yaw,
-            crop_top_px=crop_top_px
+            crop_top_px=crop_top_px,
         )
         bank[idx] = (mx, my)
     return bank
 
-
-def extract_view_with_lut(src_cropped: ImageRGB, lut: Tuple[npt.NDArray[np.float32], npt.NDArray[np.float32]]) -> ImageRGB:
-    """Apply precomputed (map_x, map_y) to the cropped source image."""
-    map_x, map_y = lut
-    return cv2.remap(src_cropped, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
-
-
-# ---- geometry: HFOV -> intrinsics (rectilinear) ----
-def intrinsics_from_hfov(width: int, height: int, hfov_rad: float) -> np.ndarray:
-    """Pinhole intrinsics K from HFOV; square pixels."""
-    fx = width / (2.0 * np.tan(hfov_rad / 2.0))
-    fy = fx
-    cx = width / 2.0
-    cy = height / 2.0
-    return np.array([[fx, 0, cx],
-                     [0,  fy, cy],
-                     [0,   0,  1]], dtype=np.float32)
-
-
-def adjust_K_for_crop(K: np.ndarray, crop_top_px: int) -> np.ndarray:
-    """Shift principal point after cropping top rows off the source image."""
-    Kc = K.copy()
-    Kc[1, 2] = K[1, 2] - float(crop_top_px)
-    return Kc
 
 
 def crop_and_split_fisheye_5(
@@ -173,22 +172,6 @@ def crop_and_split_fisheye_5(
 
     return windows
 
-
-def dewarp_side_windows(
-    windows: list[np.ndarray],
-    luts: dict[int, tuple[np.ndarray, np.ndarray]],
-    dewarp_indices: tuple[int, ...] = (0, 1, 3, 4),
-) -> list[np.ndarray]:
-    """Dewarp selected side windows using per-window LUTs, if present."""
-    if not luts:
-        return windows
-
-    out = list(windows)
-    for idx in dewarp_indices:
-        if idx < len(out) and idx in luts:
-            map_x, map_y = luts[idx]
-            out[idx] = cv2.remap(out[idx], map_x, map_y, interpolation=cv2.INTER_LINEAR)
-    return out
 
 
 
@@ -242,38 +225,28 @@ class CameraSingleSlot(Node):
 
         self.bridge = CvBridge()
 
-        
-        self.lut_bank: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+        # Parameters for LUT-based rectified windows
+        self.crop_top_px = 280
+        src_width = 1600
+        src_height_full = 600
+        src_height_cropped = src_height_full - self.crop_top_px  # 320
 
-        # LUTs computed once at startup
+        # Precompute LUTs once: 5 yaw bins across ~160°
         try:
-            # Source after crop:
-            # You crop top 0 in your current pipeline, so H_src=600, W_src=1600
-            src_size = (1600, 600)            # (W, H) before splitting
-            hfov_src = 2.8                    # radians (from SDF)
-            hfov_win_deg = 60.0               # each active-vision window FOV
-            crop_top_px = 0
-            
-            # desired yaws for your 5 windows (match your previous system)
             yaws_deg = (-64.0, -32.0, 0.0, 32.0, 64.0)
-            
-            # build LUTs sized to 320×320 windows (your current pipeline)
             self.lut_bank = build_lut_bank(
-                src_size=src_size,
-                hfov_src=hfov_src,
+                src_size=(src_width, src_height_cropped),
+                hfov_src=2.8,
                 yaws_deg=yaws_deg,
-                hfov_win_deg=hfov_win_deg,
+                hfov_win_deg=60.0,
                 out_hw=320,
-                crop_top_px=crop_top_px,
+                crop_top_px=self.crop_top_px,
             )
-            self.get_logger().info("Loaded LUTs for wide-FOV dewarping.")
-
+            self.get_logger().info("Precomputed LUTs for 5 rectified windows.")
         except Exception as e:
-            self.get_logger().warn(f"Failed LUT initialization: {e}")
+            self.get_logger().warning(f"Failed to precompute LUTs, using raw windows: {e}")
             self.lut_bank = {}
 
-
-        
         # Clean up any existing shared memory with same name
         try:
             shared_memory.SharedMemory(name=SHM_NAME).unlink()
@@ -282,28 +255,16 @@ class CameraSingleSlot(Node):
         except Exception as e:
             self.get_logger().warning(f"Error cleaning existing memory: {e}")
 
-        # Create shared memory: [timestamp:8][frame_data:H*W*3]
-        #frame_size = H * W * 3
-        #total_size = 8 + frame_size  # timestamp + frame bytes
-
-        # Create shared memory: [timestamp:8][NUM_IMAGES * frame_data:H*W*3]
-        frame_size = H * W * 3
-        self.frame_size = frame_size
-        total_size = 8 + frame_size * NUM_IMAGES  # timestamp + all image bytes
-
-        
-        self.shm = shared_memory.SharedMemory(
-            create=True,
-            size=total_size,
-            name=SHM_NAME,
-        )
-
-        # Set global reference for cleanup
+        # Create shared memory
+        frame_size = H * W * 3  # uint8 RGB
+        total_size = 8 + frame_size * NUM_IMAGES  # 8 bytes for timestamp
+        self.shm = shared_memory.SharedMemory(create=True, size=total_size, name=SHM_NAME)
         global g_shm
         g_shm = self.shm
+        self.frame_size = frame_size
 
-        # Subscribe to camera topic
-        self.subscription = self.create_subscription(
+        # ROS2 subscriber
+        self.sub = self.create_subscription(
             Image,
             camera_topic,
             self.camera_callback,
@@ -314,14 +275,14 @@ class CameraSingleSlot(Node):
             f"Camera single slot ready on {camera_topic}, SHM={SHM_NAME}"
         )
 
+
     def camera_callback(self, msg: Image) -> None:
-        """Convert, center-crop, downsample, and write latest frame to shared memory."""
+        """Convert, crop, generate rectified windows, and write frames to shared memory."""
         try:
-            # 1. ROS Image -> RGB NumPy (H_in, W_in, 3)
+            # 1. ROS Image -> RGB NumPy (H_in, W_in, 3) = (600,1600,3)
             cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding="rgb8")
 
-
-            # Image 0: center 600x600 -> 320x320 (60° view)
+            # Image 0: center 600x600 -> 320x320 (60° central view)
             center_square = crop_center_square(cv_image)
             center_320 = cv2.resize(
                 center_square,
@@ -329,20 +290,26 @@ class CameraSingleSlot(Node):
                 interpolation=cv2.INTER_AREA,
             )
 
-            # Images 1–5: crop top and split into 5 windows (320x320 each)
-            windows = crop_and_split_fisheye_5(cv_image, crop_top_px=280)
+            # Images 1–5: rectified 60° windows from cropped full frame
+            # Crop top rows once
+            cropped = cv_image[self.crop_top_px :, :, :]  # (320, 1600, 3)
 
-            # Replace warped windows with dewarped windows
-            windows = []
-            for i, win in enumerate(raw_windows):
-                if i in self.lut_bank:
-                    win_rect = extract_view_with_lut(img, self.lut_bank[i])
-                    windows.append(win_rect)
-                else:
-                    windows.append(win)
-            
-            # If you have LUTs set up, dewarp side windows here:
-            windows = dewarp_side_windows(windows, self.lut_bank)
+            windows: List[ImageRGB] = []
+            if self.lut_bank:
+                for idx in range(5):
+                    map_x, map_y = self.lut_bank[idx]
+                    rect = cv2.remap(
+                        cropped,
+                        map_x,
+                        map_y,
+                        interpolation=cv2.INTER_LINEAR,
+                        borderMode=cv2.BORDER_CONSTANT,
+                    )
+                    assert rect.shape == (H, W, 3), f"Rectified window {idx} has shape {rect.shape}"
+                    windows.append(rect)
+            else:
+                # Fallback: naive split (no dewarp)
+                windows = crop_and_split_fisheye_5(cv_image, crop_top_px=self.crop_top_px)
 
             # Collect all 6 images
             images = [center_320] + list(windows)
@@ -354,14 +321,14 @@ class CameraSingleSlot(Node):
 
             # Write all 6 images sequentially
             for idx, img in enumerate(images):
-                # ensure 320x320x3 uint8
                 if img.dtype != np.uint8:
                     img = np.clip(img, 0, 255).astype(np.uint8)
                 offset = 8 + idx * self.frame_size
-                self.shm.buf[offset:offset + self.frame_size] = img.tobytes()
-            
+                self.shm.buf[offset : offset + self.frame_size] = img.tobytes()
+
         except Exception as e:
             self.get_logger().error(f"Error writing frame: {e}")
+
 
     def destroy_node(self) -> None:
         """Clean up on destruction."""

@@ -52,6 +52,36 @@ SHM_ACTIVE_CTRL = "active_window_ctrl"  # control block from Dreamer
 # Default YOLO model path
 DEFAULT_YOLO_PATH = "/home/jack/src/attention/models/yolo11n.onnx"
 
+
+def read_camera_frame(shm: shared_memory.SharedMemory, 
+                     img_index: int,
+                     h: int = 320, w: int = 320) -> np.ndarray:
+    """Read single image from shared memory with correct offset."""
+    frame_size = h * w * 3
+    offset = 8 + img_index * frame_size
+    frame_bytes = bytes(shm.buf[offset:offset + frame_size])
+    return np.frombuffer(frame_bytes, dtype=np.uint8).reshape(h, w, 3)
+
+
+def read_rl_control(shm: shared_memory.SharedMemory, 
+                    num_images: int = 6) -> Tuple[int, int]:
+    """Read active_vision_action and step_count from shared memory."""
+    frame_size = 320 * 320 * 3
+    action_offset = 8 + num_images * frame_size
+    action = struct.unpack_from('<i', shm.buf, action_offset)[0]
+    step = struct.unpack_from('<i', shm.buf, action_offset + 4)[0]
+    return action, step
+
+
+def write_rl_observation(shm: shared_memory.SharedMemory,
+                        attention: np.ndarray,
+                        fused: np.ndarray,
+                        step_count: int) -> None:
+    """Write 96x96x4 observation + step_count to rl_observation shared memory."""
+    output = np.concatenate([attention, fused], axis=-1)  # 96x96x4
+    struct.pack_into('<i', shm.buf, 0, step_count)
+    shm.buf[4:4 + output.nbytes] = output.tobytes()
+
 def read_six_images_if_new(
     shm: shared_memory.SharedMemory,
     last_timestamp: float,
@@ -549,6 +579,8 @@ def main():
 
         print("Waiting for frames...")
 
+
+        last_step = -1
         # Main processing loop
         while True:
             loop_idx += 1

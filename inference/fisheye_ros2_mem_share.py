@@ -257,12 +257,18 @@ class CameraSingleSlot(Node):
 
         # Create shared memory
         frame_size = H * W * 3  # uint8 RGB
-        total_size = 8 + frame_size * NUM_IMAGES  # 8 bytes for timestamp
+        total_size = 8 + frame_size * NUM_IMAGES + 8 # timestamp + images + action/step
+
         self.shm = shared_memory.SharedMemory(create=True, size=total_size, name=SHM_NAME)
         global g_shm
         g_shm = self.shm
         self.frame_size = frame_size
 
+        # Initialize control fields for RL agent
+        action_offset = 8 + NUM_IMAGES * frame_size
+        struct.pack_into('<i', self.shm.buf, action_offset, 0)      # action = 0
+        struct.pack_into('<i', self.shm.buf, action_offset + 4, 0)  # step_count = 0
+        
         # ROS2 subscriber
         self.sub = self.create_subscription(
             Image,

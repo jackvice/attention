@@ -11,26 +11,23 @@ from multiprocessing import shared_memory
 import argparse
 from typing import List, Tuple, Optional, Dict, Any, NamedTuple
 import onnxruntime as ort
-import time, torch, nvtx, jax
+import time, nvtx, jax
 from concurrent.futures import ThreadPoolExecutor
 from collections import deque
 import struct
 import jax.numpy as jnp
+import cv2
+import sys
 
 import struct
 # Import existing utilities
 from trajectory_utils import (
     Pedestrian,
     create_target_heatmap_from_pedestrians,
-    detect_pedestrians_yolo_onnx,
-    create_masks_from_pedestrians,
-    create_fused_observation_jax,
-    write_observation_to_shm,
-    #estimate_depth_pytorch,
-    save_debug_observation,
     wait_for_depth_result,
     submit_depth_estimation,
     create_target_heatmap_from_pedestrians,
+    detect_pedestrians_yolo_onnx,
 )
 
 
@@ -53,6 +50,10 @@ SHM_ACTIVE_CTRL = "active_window_ctrl"  # control block from Dreamer
 DEFAULT_YOLO_PATH = "/home/jack/src/attention/models/yolo11n.onnx"
 
 
+def write_observation_to_shm(obs: np.ndarray, shm, step_count: int):
+    struct.pack_into('<i', shm.buf, 0, step_count)
+    shm.buf[4:4 + obs.nbytes] = obs.tobytes()
+
 def read_camera_frame(shm: shared_memory.SharedMemory, 
                      img_index: int,
                      h: int = 320, w: int = 320) -> np.ndarray:
@@ -63,11 +64,9 @@ def read_camera_frame(shm: shared_memory.SharedMemory,
     return np.frombuffer(frame_bytes, dtype=np.uint8).reshape(h, w, 3)
 
 
-def read_rl_control(shm: shared_memory.SharedMemory, 
-                    num_images: int = 6) -> Tuple[int, int]:
-    """Read active_vision_action and step_count from shared memory."""
+def read_rl_control(shm: shared_memory.SharedMemory) -> Tuple[int, int]:
     frame_size = 320 * 320 * 3
-    action_offset = 8 + num_images * frame_size
+    action_offset = 8 + 6 * frame_size
     action = struct.unpack_from('<i', shm.buf, action_offset)[0]
     step = struct.unpack_from('<i', shm.buf, action_offset + 4)[0]
     return action, step
@@ -82,47 +81,18 @@ def write_rl_observation(shm: shared_memory.SharedMemory,
     struct.pack_into('<i', shm.buf, 0, step_count)
     shm.buf[4:4 + output.nbytes] = output.tobytes()
 
-def read_six_images_if_new(
-    shm: shared_memory.SharedMemory,
-    last_timestamp: float,
-    num_images: int = NUM_IMAGES,
-    height: int = H,
-    width: int = W,
-) -> Tuple[Optional[np.ndarray], Optional[List[np.ndarray]], float]:
-    """
-    Read all 6 images (center + 5 windows) from shared memory
-    if the timestamp is newer than last_timestamp.
 
-    Layout in SHM:
-        [0:8]   -> float64 timestamp (seconds)
-        [8:...] -> num_images * (H*W*3) bytes of uint8 RGB images.
-
-    Returns:
-        (center_rgb_float, window_rgb_list_float, current_timestamp)
-        or (None, None, current_timestamp) if no new frame.
-    """
-    # Read timestamp
-    current_timestamp = struct.unpack_from("<d", shm.buf, 0)[0]
-    if current_timestamp <= last_timestamp:
-        return None, None, current_timestamp
-
-    # Read all image bytes as a flat view
-    total_frame_bytes = num_images * FRAME_BYTES
-    raw = memoryview(shm.buf)[8 : 8 + total_frame_bytes]
-    arr = np.frombuffer(raw, dtype=np.uint8)
-
-    # Reshape to [num_images, H, W, 3]
-    arr = arr.reshape(num_images, height, width, 3)
-
-    # Convert to float32 [0,1]
-    arr_f = arr.astype(np.float32) / 255.0
-
-    # image_0 is center; image_1..5 are windows
-    center_rgb = arr_f[0]
-    window_rgbs = [arr_f[i] for i in range(1, num_images)]
-
-    return center_rgb, window_rgbs, current_timestamp
-
+def read_six_images_if_new(shm, last_ts):
+    ts = struct.unpack_from('<d', shm.buf, 0)[0]
+    if ts <= last_ts:
+        return None, [], ts
+    
+    frame_size = 320 * 320 * 3
+    center = np.frombuffer(shm.buf[8:8+frame_size], dtype=np.uint8).reshape(320,320,3)
+    windows = [np.frombuffer(shm.buf[8+(i+1)*frame_size:8+(i+2)*frame_size], 
+               dtype=np.uint8).reshape(320,320,3) for i in range(5)]
+    
+    return center / 255.0, [w / 255.0 for w in windows], ts
 
 
 def read_active_window_ctrl(
@@ -359,129 +329,110 @@ def process_with_attention(
 import numpy as np
 from typing import Tuple
 
-def fuse_gray_alpha_depth(
+
+def fuse_edges_boxes_depth(
     rgb: np.ndarray,
     boxes: np.ndarray,
     depth: np.ndarray,
     depth_min: float = 0.0,
-    depth_max: float = 10.0,
+    depth_max: float = 1.0,
 ) -> np.ndarray:
     """
-    Convert RGB to grayscale + alpha (YOLO boxes) and fuse with depth
-    into a 3-channel float32 image.
-
-    Args:
-        rgb:   H x W x 3 uint8 or float32 image (RGB).
-        boxes: N x 5 array of YOLO detections in pixel coords:
-               [x_min, y_min, x_max, y_max, score] per row.
-               Coordinates must be in the same H,W frame as `rgb`.
-        depth: H x W or H x W x 1 float32 depth image (meters or arbitrary units).
-        depth_min: Minimum depth value for clipping (default 0.0).
-        depth_max: Maximum depth value for clipping/normalization (default 10.0).
-
-    Returns:
-        fused: H x W x 3 float32 array in [0,1], where:
-               channel 0: grayscale luminance
-               channel 1: alpha / person-confidence mask
-               channel 2: normalized depth
+    Channel 0: Grayscale luminance
+    Channel 1: Edge magnitude + pedestrian boxes
+    Channel 2: Depth
     """
-    # --- Basic shape checks ---
-    assert rgb.ndim == 3 and rgb.shape[2] == 3, "rgb must be HxWx3"
     h, w, _ = rgb.shape
-
-    if depth.ndim == 3 and depth.shape[2] == 1:
-        depth = depth[..., 0]
-    assert depth.shape == (h, w), "depth must match rgb spatial size"
-
-    if boxes.size == 0:
-        boxes = boxes.reshape(0, 5)
-    assert boxes.ndim == 2 and boxes.shape[1] >= 5, "boxes must be Nx5+"
-
-    # --- Convert RGB to grayscale luminance in [0,1] ---
+    
+    # Convert to grayscale
     if rgb.dtype == np.uint8:
         rgb_f = rgb.astype(np.float32) / 255.0
     else:
         rgb_f = rgb.astype(np.float32)
-
-    # Standard luminance transform
-    L = 0.299 * rgb_f[..., 0] + 0.587 * rgb_f[..., 1] + 0.114 * rgb_f[..., 2]  # HxW
-
-    # --- Initialize alpha mask ---
-    A = np.zeros((h, w), dtype=np.float32)
-
-    # --- Compute border thickness based on resolution ---
-    # Aim for ≥1px after downsampling to 96x96
-    scale = max(h, w) / 96.0
-
-    t = max(4, int(round(max(H,W) / 48))) # border thickness pixels to survive downsampling
     
-    # --- Overlay boxes: interior alpha + thick border ---
+    Y = 0.299*rgb_f[:,:,0] + 0.587*rgb_f[:,:,1] + 0.114*rgb_f[:,:,2]
+    
+    # Compute edge magnitude using Sobel
+    gray_uint8 = (Y * 255).astype(np.uint8)
+    sobelx = cv2.Sobel(gray_uint8, cv2.CV_32F, 1, 0, ksize=3)
+    sobely = cv2.Sobel(gray_uint8, cv2.CV_32F, 0, 1, ksize=3)
+    edges = np.sqrt(sobelx**2 + sobely**2)
+    edges = np.clip(edges / 255.0, 0, 1)  # Normalize to [0,1]
+    
+    # Overlay pedestrian boxes on edge channel
     for box in boxes:
         x_min, y_min, x_max, y_max, score = box[:5]
-
-        # Clamp to valid integer pixel indices
-        x0 = max(0, min(w - 1, int(np.floor(x_min))))
-        y0 = max(0, min(h - 1, int(np.floor(y_min))))
-        x1 = max(0, min(w - 1, int(np.ceil(x_max))))
-        y1 = max(0, min(h - 1, int(np.ceil(y_max))))
-
+        x0 = max(0, min(w-1, int(x_min)))
+        y0 = max(0, min(h-1, int(y_min)))
+        x1 = max(0, min(w-1, int(x_max)))
+        y1 = max(0, min(h-1, int(y_max)))
+        
         if x1 <= x0 or y1 <= y0:
-            continue  # degenerate box
-
-        # Interior region (may be empty if box is very thin)
-        xi0 = x0 + t
-        yi0 = y0 + t
-        xi1 = x1 - t
-        yi1 = y1 - t
-
-        # Interior: encode confidence in alpha, keep grayscale as-is
-        if xi1 > xi0 and yi1 > yi0:
-            A[yi0:yi1, xi0:xi1] = np.maximum(A[yi0:yi1, xi0:xi1], float(score))
-
-        # Border region: overwrite to ensure visibility after downsampling
-        # Border brightness: white (1.0) for maximum contrast.
-        # Alpha on border: 1.0 to make it a strong signal.
-        # Top border
-        yt0, yt1 = y0, min(y0 + t, y1)
-        L[yt0:yt1, x0:x1] = 1.0
-        A[yt0:yt1, x0:x1] = 1.0
-
-        # Bottom border
-        yb0, yb1 = max(y1 - t, y0), y1
-        L[yb0:yb1, x0:x1] = 1.0
-        A[yb0:yb1, x0:x1] = 1.0
-
-        # Left border
-        xl0, xl1 = x0, min(x0 + t, x1)
-        L[y0:y1, xl0:xl1] = 1.0
-        A[y0:y1, xl0:xl1] = 1.0
-
-        # Right border
-        xr0, xr1 = max(x1 - t, x0), x1
-        L[y0:y1, xr0:xr1] = 1.0
-        A[y0:y1, xr0:xr1] = 1.0
-
-    # --- Normalize depth to [0,1] ---
-    depth_f = depth.astype(np.float32)
-    # Replace NaNs/Infs with far depth
-    invalid = ~np.isfinite(depth_f)
-    if np.any(invalid):
-        depth_f[invalid] = depth_max
-
-    depth_f = np.clip(depth_f, depth_min, depth_max)
-    if depth_max > depth_min:
-        D_norm = (depth_f - depth_min) / (depth_max - depth_min)
-    else:
-        # avoid divide-by-zero; fall back to zeros
-        D_norm = np.zeros_like(depth_f, dtype=np.float32)
-
-    # --- Stack into fused 3-channel output ---
-    fused = np.stack([L, A, D_norm], axis=-1).astype(np.float32)  # HxWx3
-
-    return fused
+            continue
+        
+        edges[y0:y1, x0:x1] = 1.0
+    
+    # Depth
+    D = depth.astype(np.float32)
+    if D.ndim == 3:
+        D = D[:,:,0]
+    
+    return np.stack([Y, edges, D], axis=-1).astype(np.float32)
 
 
 
+def run_attention_pipeline_from_buffer(
+    frame_buffer: deque,
+    yolo_session: ort.InferenceSession,
+    predict_fn: callable
+) -> Tuple[Optional[np.ndarray], ort.InferenceSession]:
+    """
+    Run attention pipeline on buffered frames.
+    
+    Returns:
+        heatmap: (320, 320) float32 in [0,1], or None if buffer not full
+        yolo_session: Updated session (or same if no reload)
+    """
+    if len(frame_buffer) < BUFFER_SIZE:
+        return None, yolo_session
+    
+    # Get temporal sequence from buffer
+    indices = [0, 15, 30, 45, 59]
+    frames = [frame_buffer[i][0] for i in indices]
+    
+    # Stack into batch: (1, 5, 320, 320, 3)
+    rgb_batch = np.stack(frames)[np.newaxis]
+    
+    # Run YOLO on each frame to create masks
+    from trajectory_utils import detect_pedestrians_yolo_onnx
+    
+    mask_batch = []
+    for frame in frames:
+        # detect_pedestrians_yolo_onnx expects [0,1] float
+        pedestrians, yolo_session = detect_pedestrians_yolo_onnx(
+            frame,
+            session=yolo_session
+        )
+        
+        # Create mask from pedestrian bboxes
+        mask = np.zeros((320, 320, 1), dtype=np.float32)
+        for ped in pedestrians:
+            x1, y1, x2, y2 = ped.bbox
+            mask[y1:y2, x1:x2] = 1.0
+        
+        mask_batch.append(mask)
+    
+    mask_batch = np.stack(mask_batch)[np.newaxis]  # (1, 5, 320, 320, 1)
+    
+    # Run attention model
+    import jax.numpy as jnp
+    rgb_jax = jnp.array(rgb_batch)
+    mask_jax = jnp.array(mask_batch)
+    
+    heatmap_jax = predict_fn(rgb_jax, mask_jax)
+    heatmap = np.array(heatmap_jax[0, :, :, 0])  # (320, 320)
+    
+    return heatmap, yolo_session
 
 def main():
     """Main function with multi-image shared memory and active window control."""
@@ -609,7 +560,8 @@ def main():
                 continue
 
             # 3) Read active window selection (for image_2)
-            window_idx, step_or_ts = read_active_window_ctrl(shm_ctrl, default_idx=0, default_step=0)
+            window_idx, step_count = read_rl_control(shm)  # shm is camera_latest
+            
             # Clamp index to [0, 4]
             if window_idx < 0 or window_idx > 4:
                 window_idx = 0
@@ -617,42 +569,85 @@ def main():
             image_2_rgb = window_rgbs[window_idx]  # float32 [0,1], shape [H,W,3]
 
             # 4) Start depth estimation on image_2 (Pipeline 3)
+            #print(f"DEBUG: Submitting depth estimation, session is None: {depth_session is None}")
             depth_future = submit_depth_estimation(depth_executor, image_2_rgb, depth_session)
 
             # 5) Run YOLO on image_2 (Pipeline 2)
-            pedestrians_win, yolo_session = run_yolo_on_window(
-                image_2_rgb, yolo_session
+            pedestrians_win, yolo_session = detect_pedestrians_yolo_onnx(
+                image_2_rgb, session=yolo_session
             )
+            
             # (We don't yet use pedestrians_win in the RL obs; it's ready for future fusion.)
 
             # 6) Wait for depth result, with cached fallback like before
+            #print(f"DEBUG: Waiting for depth result...")
             depth_image, new_depth_session = wait_for_depth_result(
-                depth_future, timeout_seconds=0.1
+                depth_future, timeout_seconds=5.0  # Allow time for first model load
             )
+            #print(f"DEBUG: Depth result - image is None: {depth_image is None}, session is None: {new_depth_session is None}")
             if new_depth_session is not None:
                 depth_session = new_depth_session
+                #print(f"DEBUG: Updated depth_session cache")
 
             if depth_image is None:
                 if last_depth_image is not None:
                     depth_image = last_depth_image
+                    #print(f"DEBUG: Using cached depth")
                 else:
                     depth_image = np.zeros(image_2_rgb.shape[:2], dtype=np.float32)
+                    #print(f"DEBUG: Using zero depth fallback")
             else:
                 last_depth_image = depth_image
+                #print(f"DEBUG: Got new depth, min={np.min(depth_image):.3f}, max={np.max(depth_image):.3f}")
 
             # 7) Create fused observation (still 96x96x3 via existing JAX helper)
             try:
+
                 heatmap_jax = jnp.array(heatmap)
 
-                # 1) Fused 3-channel image: gray + alpha (YOLO boxes) + depth
-                fused_img = fuse_gray_alpha_depth(
-                    rgb=image_2_rgb,
-                    boxes=pedestrians_win,
-                    depth=depth_image,
-                    target_height=rl_obs_height,
-                    target_width=rl_obs_width,
-                )  # shape (H, W, 3)
+                # Resize image_2_rgb to RL resolution first
+                image_2_resized = cv2.resize(
+                    (image_2_rgb * 255).astype(np.uint8),
+                    (rl_obs_width, rl_obs_height),
+                    interpolation=cv2.INTER_AREA
+                )
+                
+                # Resize depth to match
+                depth_resized = cv2.resize(
+                    depth_image,
+                    (rl_obs_width, rl_obs_height),
+                    interpolation=cv2.INTER_LINEAR
+                )
+                
+                # Convert pedestrians to boxes array and scale to resized coordinates
+                scale_x = rl_obs_width / 320
+                scale_y = rl_obs_height / 320
+                boxes = np.array([
+                    [p.bbox[0]*scale_x, p.bbox[1]*scale_y, 
+                     p.bbox[2]*scale_x, p.bbox[3]*scale_y, p.confidence]
+                    for p in pedestrians_win
+                ]) if pedestrians_win else np.zeros((0, 5))
 
+                # Just before fuse_gray_alpha_depth call (around line 687)
+                #print(f"DEBUG: depth_resized shape={depth_resized.shape}, min={np.min(depth_resized):.3f}, max={np.max(depth_resized):.3f}")
+                #print(f"DEBUG: image_2_resized shape={image_2_resized.shape}")
+                #print(f"DEBUG: boxes shape={boxes.shape}, count={len(pedestrians_win)}")
+
+                
+                # 1) Fused 3-channel image: gray + alpha (YOLO boxes) + depth
+                fused_img = fuse_edges_boxes_depth(
+                    rgb=image_2_resized,
+                    boxes=boxes,
+                    depth=depth_resized,
+                    depth_min=0.0,
+                    depth_max=1.0,  # ADD THIS - depth is already normalized
+                )  # shape (96, 96, 3)
+
+                #print(f"DEBUG: fused_img shape={fused_img.shape}")
+                #print(f"DEBUG: fused_img channel 0 (gray) min={np.min(fused_img[:,:,0]):.3f}, max={np.max(fused_img[:,:,0]):.3f}")
+                #print(f"DEBUG: fused_img channel 1 (alpha) min={np.min(fused_img[:,:,1]):.3f}, max={np.max(fused_img[:,:,1]):.3f}")
+                #print(f"DEBUG: fused_img channel 2 (depth) min={np.min(fused_img[:,:,2]):.3f}, max={np.max(fused_img[:,:,2]):.3f}")
+                
                 # 2) Resize heatmap to RL resolution; ensure it is (H, W, 1)
                 heatmap_resized = cv2.resize(
                     heatmap, (rl_obs_width, rl_obs_height), interpolation=cv2.INTER_LINEAR
@@ -664,7 +659,7 @@ def main():
                 rl_obs = np.concatenate([heatmap_resized, fused_img], axis=-1)  # (H, W, 4)
                 rl_obs = rl_obs.astype(np.float32)
 
-                write_observation_to_shm(rl_obs, rl_obs_shm)
+                write_observation_to_shm(rl_obs, rl_obs_shm, step_count)
 
 
             except Exception as e:

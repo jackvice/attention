@@ -369,8 +369,8 @@ def fuse_edges_boxes_depth(
         
         if x1 <= x0 or y1 <= y0:
             continue
-        
-        edges[y0:y1, x0:x1] = 1.0
+        yy, xx = np.ogrid[y0:y1, x0:x1]
+        edges[y0:y1, x0:x1] = ((yy + xx) % 2 == 0).astype(np.float32)
     
     # Depth
     D = depth.astype(np.float32)

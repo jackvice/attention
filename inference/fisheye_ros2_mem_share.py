@@ -226,7 +226,7 @@ class CameraSingleSlot(Node):
         self.bridge = CvBridge()
 
         # Parameters for LUT-based rectified windows
-        self.crop_top_px = 280
+        self.crop_top_px = 0 #280
         src_width = 1600
         src_height_full = 600
         src_height_cropped = src_height_full - self.crop_top_px  # 320
@@ -235,7 +235,8 @@ class CameraSingleSlot(Node):
         try:
             yaws_deg = (-64.0, -32.0, 0.0, 32.0, 64.0)
             self.lut_bank = build_lut_bank(
-                src_size=(src_width, src_height_cropped),
+                #src_size=(src_width, src_height_cropped),
+                src_size=(src_width, src_height_full),
                 hfov_src=2.8,
                 yaws_deg=yaws_deg,
                 hfov_win_deg=60.0,
@@ -296,16 +297,12 @@ class CameraSingleSlot(Node):
                 interpolation=cv2.INTER_AREA,
             )
 
-            # Images 1–5: rectified 60° windows from cropped full frame
-            # Crop top rows once
-            cropped = cv_image[self.crop_top_px :, :, :]  # (320, 1600, 3)
-
             windows: List[ImageRGB] = []
             if self.lut_bank:
                 for idx in range(5):
                     map_x, map_y = self.lut_bank[idx]
                     rect = cv2.remap(
-                        cropped,
+                        cv_image,
                         map_x,
                         map_y,
                         interpolation=cv2.INTER_LINEAR,

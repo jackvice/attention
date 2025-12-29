@@ -32,147 +32,96 @@ SHM_NAME = "camera_latest"
 # Global for cleanup
 g_shm: Optional[shared_memory.SharedMemory] = None
 
-
-
 ImageRGB = npt.NDArray[np.uint8]
 
-from typing import Dict
 
-def intrinsics_from_hfov(width: int, height: int, hfov: float) -> np.ndarray:
-    """Simple pinhole intrinsics from horizontal FOV (radians)."""
-    fx = (width / 2.0) / np.tan(hfov / 2.0)
-    fy = fx
-    cx = width / 2.0
-    cy = height / 2.0
-    K = np.array(
-        [[fx, 0.0, cx],
-         [0.0, fy, cy],
-         [0.0, 0.0, 1.0]],
-        dtype=np.float32,
-    )
-    return K
-
-
-def adjust_K_for_crop(K_full: np.ndarray, crop_top_px: int) -> np.ndarray:
-    """Shift principal point down by crop_top_px rows."""
-    K = K_full.copy()
-    K[1, 2] -= float(crop_top_px)
-    return K
-
-
-def make_yaw_lut_rect_to_rect(
-    src_size: Tuple[int, int],      # (W_src, H_src) AFTER CROP
-    dst_hw: int,                    # 320 for 320x320
-    hfov_src: float,                # radians (2.8)
-    hfov_win: float,                # radians (np.deg2rad(60))
-    yaw_deg: float,                 # window center yaw
-    crop_top_px: int,               # how many rows were removed from the top
-) -> Tuple[npt.NDArray[np.float32], npt.NDArray[np.float32]]:
+def make_pinhole_to_rect_lut(
+    src_w: int,
+    src_h: int,
+    dst_hw: int,
+    hfov_dst_rad: float,
+    yaw_deg: float,
+    hfov_src_rad: float,
+) -> tuple[np.ndarray, np.ndarray]:
     """
-    Remap a local 60° pinhole view (dst) into the wide source rectilinear image (src).
-    Returns (map_x, map_y) for cv2.remap, to be applied to the cropped source image.
+    Map from a virtual pinhole camera (dst_hw x dst_hw, HFOV = hfov_dst_rad,
+    yaw-rotated by yaw_deg) into the *real* pinhole camera image
+    (src_w x src_h, HFOV = hfov_src_rad).
+
+    Returns:
+        map_x, map_y: float32 arrays of shape (dst_hw, dst_hw) with source coordinates.
     """
-    Wc, Hc = src_size  # cropped source size (e.g. 1600 x 320)
-
-    # Source intrinsics for ORIGINAL full frame, then adjust for top crop
-    K_src_full = intrinsics_from_hfov(Wc, Hc + crop_top_px, hfov_src)
-    K_src = adjust_K_for_crop(K_src_full, crop_top_px)
-    fx_s, fy_s, cx_s, cy_s = K_src[0, 0], K_src[1, 1], K_src[0, 2], K_src[1, 2]
-
-    # Target (window) intrinsics for dst_hw x dst_hw and hfov_win
-    Wd = Hd = int(dst_hw)
-    K_dst = intrinsics_from_hfov(Wd, Hd, hfov_win)
-    fx_d, fy_d, cx_d, cy_d = K_dst[0, 0], K_dst[1, 1], K_dst[0, 2], K_dst[1, 2]
-
-    # Meshgrid of destination pixels
-    xi, yi = np.meshgrid(
-        np.arange(Wd, dtype=np.float32),
-        np.arange(Hd, dtype=np.float32),
+    # 1) Pixel grid in the *output* (virtual) image, normalized to [-1, 1]
+    xx, yy = np.meshgrid(
+        np.linspace(-1.0, 1.0, dst_hw),
+        np.linspace(-1.0, 1.0, dst_hw),
     )
 
-    # Rays in target camera (before yaw)
-    x = (xi - cx_d) / fx_d
-    y = (yi - cy_d) / fy_d
-    z = np.ones_like(x, dtype=np.float32)
-    norm = np.sqrt(x * x + y * y + z * z)
-    x /= norm
-    y /= norm
-    z /= norm
+    # 2) Convert to directions in the *virtual* camera frame
+    #    HFOV_dst: x spans [-tan(FOV/2), +tan(FOV/2)] at z=1
+    t_dst = np.tan(hfov_dst_rad / 2.0)
+    x = xx * t_dst
+    y = yy * t_dst
+    z = np.ones_like(x)
 
-    # Rotate by yaw around vertical axis (Y)
-    psi = np.deg2rad(yaw_deg)
-    c, s = np.cos(psi), np.sin(psi)
-    xr = c * x + s * z
+    # Normalize to unit sphere
+    n = np.sqrt(x * x + y * y + z * z)
+    x /= n
+    y /= n
+    z /= n
+
+    # 3) Rotate these rays by yaw around the vertical axis
+    yaw = np.deg2rad(yaw_deg)
+    cos_y = np.cos(yaw)
+    sin_y = np.sin(yaw)
+
+    xr = cos_y * x + sin_y * z
     yr = y
-    zr = -s * x + c * z
+    zr = -sin_y * x + cos_y * z
 
-    # Project into source image
-    eps = 1e-6
-    zr = np.maximum(zr, eps)
-    u = fx_s * (xr / zr) + cx_s
-    v = fy_s * (yr / zr) + cy_s
+    # 4) Project into the *real* pinhole camera with HFOV_src
+    #    f = (W/2) / tan(HFOV_src/2)
+    fx = (src_w / 2.0) / np.tan(hfov_src_rad / 2.0)
+    fy = fx  # assume square pixels, no skew
+
+    cx = src_w / 2.0
+    cy = src_h / 2.0
+
+    # Avoid division by zero
+    zr_safe = np.where(zr == 0.0, 1e-6, zr)
+
+    u = fx * (xr / zr_safe) + cx
+    v = fy * (yr / zr_safe) + cy
 
     return u.astype(np.float32), v.astype(np.float32)
 
 
 def build_lut_bank(
-    src_size: Tuple[int, int],   # (Wc, Hc) after crop
-    hfov_src: float,
-    yaws_deg: Tuple[float, ...],
+    src_w: int,
+    src_h: int,
+    yaws_deg: tuple[float, ...],
     hfov_win_deg: float = 60.0,
-    out_hw: int = 320,
-    crop_top_px: int = 0,
-) -> Dict[int, Tuple[npt.NDArray[np.float32], npt.NDArray[np.float32]]]:
-    """Precompute rect-to-rect LUTs for each yaw bin (full-frame → 320x320 view)."""
-    bank: Dict[int, Tuple[npt.NDArray[np.float32], npt.NDArray[np.float32]]] = {}
-    hfov_win = np.deg2rad(hfov_win_deg)
+    dst_hw: int = 96,
+    hfov_src_rad: float = 2.8,
+) -> dict[int, tuple[np.ndarray, np.ndarray]]:
+    """
+    Build LUTs mapping each output window (60° virtual pinhole view at a given yaw)
+    into the real pinhole camera image (src_w x src_h, HFOV = hfov_src_rad).
+    """
+    hfov_dst_rad = np.deg2rad(hfov_win_deg)
+
+    bank: dict[int, tuple[np.ndarray, np.ndarray]] = {}
     for idx, yaw in enumerate(yaws_deg):
-        mx, my = make_yaw_lut_rect_to_rect(
-            src_size=src_size,
-            dst_hw=out_hw,
-            hfov_src=hfov_src,
-            hfov_win=hfov_win,
+        mx, my = make_pinhole_to_rect_lut(
+            src_w=src_w,
+            src_h=src_h,
+            dst_hw=dst_hw,
+            hfov_dst_rad=hfov_dst_rad,
             yaw_deg=yaw,
-            crop_top_px=crop_top_px,
+            hfov_src_rad=hfov_src_rad,
         )
         bank[idx] = (mx, my)
     return bank
-
-
-
-def crop_and_split_fisheye_5(
-    img: ImageRGB,
-    crop_top_px: int = 280,
-) -> List[ImageRGB]:
-    """
-    From a 600x1600 RGB image:
-      - crop `crop_top_px` rows from the top (→ 320x1600)
-      - split horizontally into 5 tiles (each 320x320).
-
-    Returns:
-        List of 5 windows [win0..win4], each H=320, W=320.
-    """
-    h, w, c = img.shape
-    assert (h, w, c) == (600, 1600, 3), f"Expected 600x1600x3, got {img.shape}"
-    assert h > crop_top_px, "crop_top_px too large"
-
-    cropped = img[crop_top_px:, :, :]          # 320 x 1600 x 3
-    h_c, w_c, _ = cropped.shape
-    assert h_c == 320, f"Expected height 320 after crop, got {h_c}"
-    assert w_c % 5 == 0, f"Width {w_c} not divisible by 5"
-
-    tile_w = w_c // 5
-    windows: List[ImageRGB] = []
-    for i in range(5):
-        x0 = i * tile_w
-        x1 = x0 + tile_w
-        win = cropped[:, x0:x1, :]
-        assert win.shape == (320, 320, 3)
-        windows.append(win)
-
-    return windows
-
-
 
 
 def cleanup_shared_memory() -> None:
@@ -223,31 +172,33 @@ class CameraSingleSlot(Node):
     def __init__(self, camera_topic: str = "/camera/image_raw") -> None:
         super().__init__("camera_single_slot")
 
+
         self.bridge = CvBridge()
 
         # Parameters for LUT-based rectified windows
-        self.crop_top_px = 0 #280
+        self.crop_top_px = 0
         src_width = 1600
         src_height_full = 600
-        src_height_cropped = src_height_full - self.crop_top_px  # 320
 
         # Precompute LUTs once: 5 yaw bins across ~160°
+        self.out_hw_lut = 320
         try:
             yaws_deg = (-64.0, -32.0, 0.0, 32.0, 64.0)
-            self.lut_bank = build_lut_bank(
-                #src_size=(src_width, src_height_cropped),
-                src_size=(src_width, src_height_full),
-                hfov_src=2.8,
+            self._lut_bank = build_lut_bank(
+                src_w=src_width,
+                src_h=src_height_full,
                 yaws_deg=yaws_deg,
                 hfov_win_deg=60.0,
-                out_hw=320,
-                crop_top_px=self.crop_top_px,
+                dst_hw=self.out_hw_lut,
             )
             self.get_logger().info("Precomputed LUTs for 5 rectified windows.")
         except Exception as e:
-            self.get_logger().warning(f"Failed to precompute LUTs, using raw windows: {e}")
-            self.lut_bank = {}
+            self.get_logger().warning(
+                f"Failed to precompute LUTs, using center view only: {e}"
+            )
+            self._lut_bank = {}
 
+        
         # Clean up any existing shared memory with same name
         try:
             shared_memory.SharedMemory(name=SHM_NAME).unlink()
@@ -298,9 +249,9 @@ class CameraSingleSlot(Node):
             )
 
             windows: List[ImageRGB] = []
-            if self.lut_bank:
+            if self._lut_bank:
                 for idx in range(5):
-                    map_x, map_y = self.lut_bank[idx]
+                    map_x, map_y = self._lut_bank[idx]
                     rect = cv2.remap(
                         cv_image,
                         map_x,
@@ -308,11 +259,12 @@ class CameraSingleSlot(Node):
                         interpolation=cv2.INTER_LINEAR,
                         borderMode=cv2.BORDER_CONSTANT,
                     )
+                    # LUT grid is 320x320, so rect should be 320x320
                     assert rect.shape == (H, W, 3), f"Rectified window {idx} has shape {rect.shape}"
                     windows.append(rect)
             else:
-                # Fallback: naive split (no dewarp)
-                windows = crop_and_split_fisheye_5(cv_image, crop_top_px=self.crop_top_px)
+                # Fallback: just reuse the center view for all 5 windows
+                windows = [center_320] * 5
 
             # Collect all 6 images
             images = [center_320] + list(windows)

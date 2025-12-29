@@ -9,17 +9,19 @@ import time
 import os
 from multiprocessing import shared_memory
 import argparse
-from typing import List, Tuple, Optional, Dict, Any, NamedTuple
+from typing import Tuple, Optional, Dict, Any
 import onnxruntime as ort
-import time, nvtx, jax
+import time, jax
 from concurrent.futures import ThreadPoolExecutor
 from collections import deque
 import struct
 import jax.numpy as jnp
 import cv2
 import sys
-
+import pickle
+from trajectory_model import SpatiotemporalAttention, ModelConfig
 import struct
+
 # Import existing utilities
 from trajectory_utils import (
     Pedestrian,
@@ -54,15 +56,6 @@ def write_observation_to_shm(obs: np.ndarray, shm, step_count: int):
     struct.pack_into('<i', shm.buf, 0, step_count)
     shm.buf[4:4 + obs.nbytes] = obs.tobytes()
 
-def read_camera_frame(shm: shared_memory.SharedMemory, 
-                     img_index: int,
-                     h: int = 320, w: int = 320) -> np.ndarray:
-    """Read single image from shared memory with correct offset."""
-    frame_size = h * w * 3
-    offset = 8 + img_index * frame_size
-    frame_bytes = bytes(shm.buf[offset:offset + frame_size])
-    return np.frombuffer(frame_bytes, dtype=np.uint8).reshape(h, w, 3)
-
 
 def read_rl_control(shm: shared_memory.SharedMemory) -> Tuple[int, int]:
     frame_size = 320 * 320 * 3
@@ -93,32 +86,6 @@ def read_six_images_if_new(shm, last_ts):
                dtype=np.uint8).reshape(320,320,3) for i in range(5)]
     
     return center / 255.0, [w / 255.0 for w in windows], ts
-
-
-def read_active_window_ctrl(
-    shm_ctrl: Optional[shared_memory.SharedMemory],
-    default_idx: int = 0,
-    default_step: int = 0,
-) -> Tuple[int, int]:
-    """
-    Read (window_idx, step_or_ts) from the control SHM.
-
-    Layout:
-        [0:4]  -> int32 window_idx (0..4)
-        [4:8]  -> int32 version    (unused here but reserved)
-        [8:16] -> int64 step_or_ts
-
-    If shm_ctrl is None, returns (default_idx, default_step).
-    """
-    if shm_ctrl is None:
-        return default_idx, default_step
-
-    buf = shm_ctrl.buf
-
-    window_idx = struct.unpack_from("<i", buf, 0)[0]
-    step_or_ts = struct.unpack_from("<q", buf, 8)[0]
-
-    return int(window_idx), int(step_or_ts)
 
 
 def attach_active_window_memory(
@@ -157,65 +124,6 @@ def attach_single_frame_memory(shm_name: str = SHM_NAME) -> shared_memory.Shared
 
 
 
-def sample_frames_from_buffer(
-    frame_buffer: deque,
-    target_time_span: float = 2.0,
-    num_samples: int = 5
-) -> Optional[Tuple[np.ndarray, np.ndarray]]:
-    """
-    Sample frames covering approximately target_time_span seconds of simulation time.
-    
-    Args:
-        frame_buffer: Buffer of (frame, timestamp) tuples
-        target_time_span: Target time span in seconds (default: 2.0)
-        num_samples: Number of frames to sample (default: 5)
-        
-    Returns:
-        Tuple of (sampled_frames, sampled_timestamps) or None if insufficient data
-    """
-    if len(frame_buffer) < num_samples:
-        return None
-    
-    # Convert deque to list for easier indexing
-    buffer_list = list(frame_buffer)
-    
-    # Get newest timestamp (first in buffer since we use appendleft)
-    newest_time = buffer_list[0][1]
-    
-    # Find the oldest frame within target_time_span
-    target_oldest_time = newest_time - target_time_span
-    
-    # Find the furthest back index that's still within our time window
-    max_index = 0
-    for i, (frame, timestamp) in enumerate(buffer_list):
-        if timestamp >= target_oldest_time:
-            max_index = i
-        else:
-            break  # Timestamps get older as we go further in the buffer
-    
-    # If we don't have enough time span, use what we have
-    if max_index < num_samples - 1:
-        max_index = min(len(buffer_list) - 1, BUFFER_SIZE - 1)
-    
-    # Sample frames evenly across the available range
-    if max_index == 0:
-        # Only one frame available, duplicate it
-        indices = [0] * num_samples
-    else:
-        # Create evenly spaced indices
-        indices = [int(i * max_index / (num_samples - 1)) for i in range(num_samples)]
-    
-    sampled_frames = []
-    sampled_timestamps = []
-    
-    for idx in indices:
-        frame, timestamp = buffer_list[idx]
-        sampled_frames.append(frame)
-        sampled_timestamps.append(timestamp)
-    
-    return np.array(sampled_frames), np.array(sampled_timestamps)
-
-
 
 def load_attention_model(
     checkpoint_path: str,
@@ -229,11 +137,7 @@ def load_attention_model(
     Returns:
         Tuple of (prediction_function, model_state)
     """
-    import pickle
     os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
-    import jax
-    import flax.linen as nn
-    from trajectory_model import SpatiotemporalAttention, ModelConfig
     
     # Load checkpoint file
     print(f"Loading attention model from {checkpoint_path}")
@@ -269,67 +173,7 @@ def load_attention_model(
     return predict_fn, {'model': model, 'params': params, 'config': config}
 
 
-class ProcessedBatch(NamedTuple):
-    """Processed frames with detections, ready for trajectory prediction."""
-    rgb_frames: np.ndarray  # [T, H, W, 3]
-    mask_frames: np.ndarray  # [T, H, W, 1]
-    timestamps: np.ndarray  # [T]
-
-
-    
-def process_with_attention(
-    batch: ProcessedBatch,
-    all_pedestrians: List[List[Pedestrian]],
-    predict_fn: callable
-) -> np.ndarray:
-    """
-    Process batch with attention model - only predict if last frame has pedestrians.
-    
-    Args:
-        batch: ProcessedBatch containing RGB and mask frames
-        all_pedestrians: Pedestrian detections for each frame in sequence
-        predict_fn: Jitted prediction function from loaded model
-        
-    Returns:
-        Combined heatmap [H, W, 1] with current positions + predicted trajectories
-    """
-    import jax.numpy as jnp
-    from config_temporal import SIGMA_PX
-    
-    # Get spatial dimensions
-    h, w = batch.rgb_frames.shape[1:3]
-    
-    # Check if last frame has pedestrians
-    if not all_pedestrians or len(all_pedestrians[0]) == 0:
-        return np.zeros((h, w, 1), dtype=np.float32)
-    
-    # Get predicted heatmap
-    rgb_frames = jnp.array(batch.rgb_frames)
-    mask_frames = jnp.array(batch.mask_frames)
-    predictions = predict_fn(rgb_frames, mask_frames)
-    predicted_heatmap = np.array(predictions[0])
-    
-    # Get current positions heatmap using Gaussian blobs
-    current_yolo_heatmap = create_target_heatmap_from_pedestrians(
-        all_pedestrians[0], h, w, sigma=SIGMA_PX
-    )
-    
-    # Combine: emphasize current YOLO detections over attention predictions
-    combined_heatmap = 0.5 * predicted_heatmap + 0.7 * current_yolo_heatmap
-    
-    # Normalize to [0,1] range
-    combined_heatmap = np.clip(combined_heatmap, 0.0, 1.0)
-    
-    #return np.zeros((h, w, 1), dtype=np.float32)  # no heatmap
-    return combined_heatmap # with heatmap
-
-
-
-
-import numpy as np
-from typing import Tuple
-
-
+# inference.py
 def fuse_edges_boxes_depth(
     rgb: np.ndarray,
     boxes: np.ndarray,
@@ -339,44 +183,67 @@ def fuse_edges_boxes_depth(
 ) -> np.ndarray:
     """
     Channel 0: Grayscale luminance
-    Channel 1: Edge magnitude + pedestrian boxes
+    Channel 1: Edge magnitude + Super Thick White Bounding Box Borders
     Channel 2: Depth
     """
     h, w, _ = rgb.shape
     
-    # Convert to grayscale
+    # --- 1. Define rgb_f ---
     if rgb.dtype == np.uint8:
         rgb_f = rgb.astype(np.float32) / 255.0
     else:
         rgb_f = rgb.astype(np.float32)
     
+    # --- 2. Calculate Grayscale (Y) ---
     Y = 0.299*rgb_f[:,:,0] + 0.587*rgb_f[:,:,1] + 0.114*rgb_f[:,:,2]
     
-    # Compute edge magnitude using Sobel
+    # --- 3. Compute Edges ---
     gray_uint8 = (Y * 255).astype(np.uint8)
     sobelx = cv2.Sobel(gray_uint8, cv2.CV_32F, 1, 0, ksize=3)
     sobely = cv2.Sobel(gray_uint8, cv2.CV_32F, 0, 1, ksize=3)
     edges = np.sqrt(sobelx**2 + sobely**2)
     edges = np.clip(edges / 255.0, 0, 1)  # Normalize to [0,1]
     
-    # Overlay pedestrian boxes on edge channel
+    # --- 4. Overlay Super Thick WHITE Borders ---
+    # Thickness in pixels (relative to the 96x96 RL image)
+    # 3px is very thick for this resolution, creating a distinct frame.
+    thickness = 8
+    
     for box in boxes:
         x_min, y_min, x_max, y_max, score = box[:5]
-        x0 = max(0, min(w-1, int(x_min)))
-        y0 = max(0, min(h-1, int(y_min)))
-        x1 = max(0, min(w-1, int(x_max)))
-        y1 = max(0, min(h-1, int(y_max)))
+        
+        # Clamp coordinates to image bounds
+        x0 = max(0, min(w, int(x_min)))
+        y0 = max(0, min(h, int(y_min)))
+        x1 = max(0, min(w, int(x_max)))
+        y1 = max(0, min(h, int(y_max)))
         
         if x1 <= x0 or y1 <= y0:
             continue
-        yy, xx = np.ogrid[y0:y1, x0:x1]
-        edges[y0:y1, x0:x1] = ((yy + xx) % 2 == 0).astype(np.float32)
-    
-    # Depth
+            
+        # We explicitly set pixels to 1.0 (Maximum Brightness/White)
+        
+        # Top Border
+        edges[y0 : min(y0 + thickness, y1), x0:x1] = 1.0
+        
+        # Bottom Border
+        edges[max(y0, y1 - thickness) : y1, x0:x1] = 1.0
+        
+        # Left Border
+        edges[y0:y1, x0 : min(x0 + thickness, x1)] = 1.0
+        
+        # Right Border
+        edges[y0:y1, max(x0, x1 - thickness) : x1] = 1.0
+        
+        # Note: We do NOT touch the pixels in the center. 
+        # They retain their natural Edge detection values (the person's shape).
+
+    # --- 5. Process Depth ---
     D = depth.astype(np.float32)
     if D.ndim == 3:
         D = D[:,:,0]
     
+    # Stack channels: Y, Edges+Box, Depth
     return np.stack([Y, edges, D], axis=-1).astype(np.float32)
 
 
@@ -628,12 +495,6 @@ def main():
                     for p in pedestrians_win
                 ]) if pedestrians_win else np.zeros((0, 5))
 
-                # Just before fuse_gray_alpha_depth call (around line 687)
-                #print(f"DEBUG: depth_resized shape={depth_resized.shape}, min={np.min(depth_resized):.3f}, max={np.max(depth_resized):.3f}")
-                #print(f"DEBUG: image_2_resized shape={image_2_resized.shape}")
-                #print(f"DEBUG: boxes shape={boxes.shape}, count={len(pedestrians_win)}")
-
-                
                 # 1) Fused 3-channel image: gray + alpha (YOLO boxes) + depth
                 fused_img = fuse_edges_boxes_depth(
                     rgb=image_2_resized,
@@ -643,11 +504,6 @@ def main():
                     depth_max=1.0,  # ADD THIS - depth is already normalized
                 )  # shape (96, 96, 3)
 
-                #print(f"DEBUG: fused_img shape={fused_img.shape}")
-                #print(f"DEBUG: fused_img channel 0 (gray) min={np.min(fused_img[:,:,0]):.3f}, max={np.max(fused_img[:,:,0]):.3f}")
-                #print(f"DEBUG: fused_img channel 1 (alpha) min={np.min(fused_img[:,:,1]):.3f}, max={np.max(fused_img[:,:,1]):.3f}")
-                #print(f"DEBUG: fused_img channel 2 (depth) min={np.min(fused_img[:,:,2]):.3f}, max={np.max(fused_img[:,:,2]):.3f}")
-                
                 # 2) Resize heatmap to RL resolution; ensure it is (H, W, 1)
                 heatmap_resized = cv2.resize(
                     heatmap, (rl_obs_width, rl_obs_height), interpolation=cv2.INTER_LINEAR

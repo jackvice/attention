@@ -2,11 +2,11 @@ test_attention_06_28_1549/
 test_ouput/
 test_attention/
 models/
+temp/
 debug_png/
 checkpoints/
 out_image/
 depth_anything_v2/
-model_output/
 preprocessed_data/
 log_dir/
 test/

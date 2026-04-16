@@ -12,7 +12,6 @@ log_dir/
 test/
 bak/
 *.pth
-*.pkl
 *.onnx
 *.pt
 *.engine

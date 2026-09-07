@@ -7,8 +7,10 @@ a ~60° pinhole view: we take the center 600x600 crop from a 1600x600
 camera image, then downsample to 320x320.
 """
 
+import argparse
 import rclpy
 from rclpy.node import Node
+from rclpy.utilities import remove_ros_args
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
 from multiprocessing import shared_memory
@@ -28,6 +30,20 @@ from typing import List, Sequence, Mapping, Tuple
 H, W = 320, 320
 NUM_IMAGES = 6
 SHM_NAME = "camera_latest"
+
+# Active-vision windows: 40 deg views spaced every 30 deg.
+#
+# The 10 deg (25%) overlap between neighbours keeps some visual continuity
+# across a pan, and the outermost edges land at +/-80 deg, which is exactly the
+# camera's 160.4 deg field of view, so no window samples off the edge of the
+# image. The previous setting (60 deg windows every 32 deg) overlapped by 47%
+# and pushed the outer two windows to +/-94 deg, past the 90 deg singularity of
+# the rectilinear camera model, leaving ~26% of those windows black.
+#
+# Changing either value changes what the agent observes, so a policy trained
+# under one setting cannot be resumed under another.
+WINDOW_YAWS_DEG = (-60.0, -30.0, 0.0, 30.0, 60.0)
+WINDOW_HFOV_DEG = 40.0
 
 # Global for cleanup
 g_shm: Optional[shared_memory.SharedMemory] = None
@@ -100,7 +116,7 @@ def build_lut_bank(
     src_w: int,
     src_h: int,
     yaws_deg: tuple[float, ...],
-    hfov_win_deg: float = 60.0,
+    hfov_win_deg: float = WINDOW_HFOV_DEG,
     dst_hw: int = 96,
     hfov_src_rad: float = 2.8,
 ) -> dict[int, tuple[np.ndarray, np.ndarray]]:
@@ -169,7 +185,12 @@ def crop_center_square(image: np.ndarray) -> np.ndarray:
 class CameraSingleSlot(Node):
     """ROS2 node that writes latest camera frame to single shared memory slot."""
 
-    def __init__(self, camera_topic: str = "/camera/image_raw") -> None:
+    def __init__(
+        self,
+        camera_topic: str = "/camera/image_raw",
+        window_hfov_deg: float = WINDOW_HFOV_DEG,
+        window_yaws_deg: Sequence[float] = WINDOW_YAWS_DEG,
+    ) -> None:
         super().__init__("camera_single_slot")
 
 
@@ -182,16 +203,25 @@ class CameraSingleSlot(Node):
 
         # Precompute LUTs once: 5 yaw bins across ~160°
         self.out_hw_lut = 320
+        self.window_hfov_deg = float(window_hfov_deg)
+        self.window_yaws_deg = tuple(float(y) for y in window_yaws_deg)
         try:
-            yaws_deg = (-64.0, -32.0, 0.0, 32.0, 64.0)
             self._lut_bank = build_lut_bank(
                 src_w=src_width,
                 src_h=src_height_full,
-                yaws_deg=yaws_deg,
-                hfov_win_deg=60.0,
+                yaws_deg=self.window_yaws_deg,
+                hfov_win_deg=self.window_hfov_deg,
                 dst_hw=self.out_hw_lut,
             )
-            self.get_logger().info("Precomputed LUTs for 5 rectified windows.")
+            half = self.window_hfov_deg / 2.0
+            spans = " ".join(
+                f"[{y - half:+.0f},{y + half:+.0f}]" for y in self.window_yaws_deg
+            )
+            self.get_logger().info(
+                f"Precomputed LUTs for {len(self.window_yaws_deg)} rectified "
+                f"windows: {self.window_hfov_deg:g} deg wide at yaws "
+                f"{[f'{y:+.0f}' for y in self.window_yaws_deg]}, covering {spans}"
+            )
         except Exception as e:
             self.get_logger().warning(
                 f"Failed to precompute LUTs, using center view only: {e}"
@@ -300,7 +330,18 @@ class CameraSingleSlot(Node):
 
 def main(args=None) -> None:
     rclpy.init(args=args)
-    node = CameraSingleSlot()
+
+    # parse_known_args on the ROS-stripped argv so the two parsers do not fight
+    parser = argparse.ArgumentParser(description="Camera single slot publisher")
+    parser.add_argument(
+        "--window-fov", type=float, default=WINDOW_HFOV_DEG, metavar="DEG",
+        help=f"active-vision window width (default {WINDOW_HFOV_DEG:g}); the "
+             f"yaw spacing is {WINDOW_YAWS_DEG[1] - WINDOW_YAWS_DEG[0]:g} deg, "
+             f"so this is the value that sets the overlap",
+    )
+    cli, _ = parser.parse_known_args(remove_ros_args(sys.argv)[1:])
+
+    node = CameraSingleSlot(window_hfov_deg=cli.window_fov)
 
     try:
         rclpy.spin(node)
